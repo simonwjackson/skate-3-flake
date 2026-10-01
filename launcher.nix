@@ -9,11 +9,23 @@
 # - The ISO picker is a modal GTK dialog. Over an X11 fullscreen window it
 #   cannot be reached, so the first run (no default.xex yet) starts windowed.
 #   Arguments you pass come last and win.
-{ writeShellApplication, coreutils, skate3-unwrapped }:
+# - The title update installer downloads by running `curl` from PATH.
+# - For an unattended first run, set SKATE3_INSTALL_ISO=/path/to/game.iso and
+#   SKATE3_INSTALL_TU=download (or a path to the TU package). The game reads
+#   both itself.
+{
+  writeShellApplication,
+  coreutils,
+  curl,
+  skate3-unwrapped,
+}:
 
 writeShellApplication {
   name = "skate3";
-  runtimeInputs = [ coreutils ];
+  runtimeInputs = [
+    coreutils
+    curl
+  ];
   text = ''
     game="''${SKATE3_GAME_DATA_ROOT:-''${XDG_DATA_HOME:-$HOME/.local/share}/skate3/game}"
     logdir="''${XDG_STATE_HOME:-$HOME/.local/state}/skate3/logs"

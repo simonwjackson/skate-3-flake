@@ -21,6 +21,17 @@ On the first run, the game opens in a window and asks for your ISO. It
 extracts the ISO, then downloads Title Update 3 from Microsoft, so the first
 run needs internet. Later runs start in fullscreen.
 
+To install without the picker, for example over SSH, set two variables. The
+game reads them itself:
+
+```sh
+SKATE3_INSTALL_ISO=/path/to/skate3.iso SKATE3_INSTALL_TU=download \
+  nix run github:simonwjackson/skate-3-flake
+```
+
+`SKATE3_INSTALL_TU` also accepts a path to the title update package
+(`TU_12K2276_000000C000000.00000000000O3`) if the download fails.
+
 You need a working Vulkan driver at `/run/opengl-driver`. On NixOS, set
 `hardware.graphics.enable = true;`.
 
