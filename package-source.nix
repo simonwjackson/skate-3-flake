@@ -138,6 +138,22 @@ stdenv.mkDerivation {
     # Taller-than-16:9 displays (Vert+), next to upstream's ultrawide.
     patch -p1 -d third_party/rexglue-sdk < ${./patches/rexglue-display-aspect.patch}
     patch -p1 < ${./patches/skate3-display-aspect.patch}
+  ''
+  # ARM64 fixes the Skate rexglue fork predates. The first three are upstream
+  # rexglue-sdk commits; the last is from Buku313's Android fork. They are
+  # correct on x86_64 too, but are applied on ARM only so the verified x86_64
+  # build stays byte-identical.
+  + lib.optionalString stdenv.hostPlatform.isAarch64 ''
+    # rexglue-sdk d82ec28: FFmpeg NEON assembly links only with hidden symbols.
+    patch -p1 -d third_party/rexglue-sdk < ${./patches/rexglue-ffmpeg-hidden-visibility.patch}
+    # rexglue-sdk 85aa46b: overlapping memcpy corrupts the title update on aarch64.
+    patch -p1 -d third_party/rexglue-sdk < ${./patches/rexglue-xex-delta-memmove.patch}
+    # rexglue-sdk 96bee61: lost wakeup for threads created suspended.
+    patch -p1 -d third_party/rexglue-sdk < ${./patches/rexglue-suspended-thread-race.patch}
+    # Buku313/rexglue-skate3-android e99203e: skip draws with no pipeline.
+    patch -p1 -d third_party/rexglue-sdk < ${./patches/rexglue-vulkan-null-pipeline-guard.patch}
+  ''
+  + ''
 
     # Submodules arrive without .git; check for the directory instead.
     substituteInPlace third_party/rexglue-sdk/thirdparty/CMakeLists.txt \
@@ -224,7 +240,10 @@ stdenv.mkDerivation {
     description = "Native recompilation of the Xbox 360 version of Skate 3, built from source";
     homepage = "https://github.com/mchughalex/skate3recomp";
     license = lib.licenses.unfree;
-    platforms = [ "x86_64-linux" ];
+    platforms = [
+      "x86_64-linux"
+      "aarch64-linux"
+    ];
     mainProgram = "skate3";
   };
 }

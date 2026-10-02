@@ -72,6 +72,9 @@ Arguments after `--` go to the game, for example
 | `packages.x86_64-linux.skate3-source` | The same launcher around the source build. |
 | `packages.x86_64-linux.skate3-source-unwrapped` | The source build. |
 | `apps.x86_64-linux.default`, `.source` | `nix run` targets for the release and the source build. |
+| `packages.aarch64-linux.default`, `.skate3-source` | The launcher around the ARM64 source build. Upstream has no ARM64 Linux release. |
+| `packages.aarch64-linux.skate3-source-unwrapped` | The ARM64 source build. |
+| `apps.aarch64-linux.default`, `.source` | `nix run` targets for the ARM64 source build. |
 
 ## Update to a new upstream release
 
@@ -112,6 +115,33 @@ Differences from the upstream release build:
 | Each submodule pinned in `sources.json` | Needed because of the broken imgui pin. |
 | Version string `2.0.2-nix` | The store copy has no `.git`. |
 | `patches/skate3-display-aspect.patch`, `patches/rexglue-display-aspect.patch` | Taller-than-16:9 displays. See below. |
+
+### ARM64
+
+`packages.aarch64-linux.skate3-source` builds the same source for 64-bit
+ARM Linux, for example a Snapdragon handheld. Build it on an ARM64 machine.
+The steps are the same as above. On a 4-core Neoverse-N1 the build takes
+about 40 minutes.
+
+The rexglue fork already supports ARM64. It predates four fixes, which the
+ARM64 build adds. The x86_64 build does not apply them, so it stays
+unchanged.
+
+| Patch | Source | Fixes |
+|---|---|---|
+| `rexglue-ffmpeg-hidden-visibility.patch` | rexglue-sdk `d82ec28` | FFmpeg's NEON assembly does not link into `librexruntime.so` without hidden symbols. |
+| `rexglue-xex-delta-memmove.patch` | rexglue-sdk `85aa46b` | An overlapping `memcpy` corrupts the title update on aarch64. |
+| `rexglue-suspended-thread-race.patch` | rexglue-sdk `96bee61` | A thread created suspended can wait forever. |
+| `rexglue-vulkan-null-pipeline-guard.patch` | Buku313/rexglue-skate3-android `e99203e` | A draw with no pipeline variant binds a null pipeline. |
+
+The recompiled C++ does not depend on the build machine. The code
+generated on ARM64 is byte-identical to the code generated on x86_64.
+
+The ARM64 build is not yet tested on a device. The Android ports below run
+the same code on Snapdragon 8 Gen 2 (Adreno 740), but with Qualcomm's
+Android driver. On Linux the GPU driver is Mesa turnip, which is untested
+with this renderer. A handheld also needs lower settings than a desktop:
+start with `resolution_scale = 1` and MSAA off.
 
 ### Taller screens (4:3, foldables)
 
@@ -158,3 +188,11 @@ The Windows build under Proton avoids both.
   recompilation and the release this flake fetches.
 - [JuiceyDew/Skate3-Recomp-Nix](https://github.com/JuiceyDew/Skate3-Recomp-Nix),
   the first NixOS packaging. This flake follows its approach.
+- [rexglue/rexglue-sdk](https://github.com/rexglue/rexglue-sdk), the
+  upstream ARM64 fixes.
+- The Android ARM64 ports showed that the game runs on Snapdragon:
+  [Buku313/Skate3-Mobile](https://github.com/Buku313/Skate3-Mobile) and its
+  [rexglue fork](https://github.com/Buku313/rexglue-skate3-android),
+  [andrewnakas/skate3-android](https://github.com/andrewnakas/skate3-android),
+  [darchap/Skate3-Port](https://github.com/darchap/Skate3-Port), and
+  [AlanConstantino/skate3-pocket](https://github.com/AlanConstantino/skate3-pocket).

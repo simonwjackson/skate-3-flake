@@ -1,0 +1,27 @@
+From d82ec280809f3505001ef7396477612cfde16864 Mon Sep 17 00:00:00 2001
+From: Tom <1568512+tomcl7@users.noreply.github.com>
+Date: Tue, 12 May 2026 17:27:04 -0400
+Subject: [PATCH] fix(ffmpeg): hide internal symbols for linux-arm64 shared
+ link
+
+---
+ thirdparty/CMakeLists.txt | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/thirdparty/CMakeLists.txt b/thirdparty/CMakeLists.txt
+index 79c9c1062..f2dbe79e9 100644
+--- a/thirdparty/CMakeLists.txt
++++ b/thirdparty/CMakeLists.txt
+@@ -667,5 +667,10 @@ if(WIN32)
+     target_link_libraries(libavcodec PRIVATE bcrypt)
+ endif()
+ 
+-# IDE folder organization
+-set_target_properties(libavutil libavcodec PROPERTIES FOLDER "FFmpeg")
++# Hidden visibility is required on aarch64. The NEON .S files use ADRP/ADD
++# PC-relative addressing (movrel) for symbols like ff_cos_*, which the linker
++# only accepts against locally bound symbols when emitting a shared object.
++set_target_properties(libavutil libavcodec PROPERTIES
++    C_VISIBILITY_PRESET hidden
++    VISIBILITY_INLINES_HIDDEN ON
++    FOLDER "FFmpeg")

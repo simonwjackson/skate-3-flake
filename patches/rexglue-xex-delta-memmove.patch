@@ -1,0 +1,55 @@
+From 85aa46b3eeaa95d5c857cf49b7d150f1d48ac418 Mon Sep 17 00:00:00 2001
+From: Marco Andronaco <andronacomarco@gmail.com>
+Date: Tue, 28 Jul 2026 03:26:43 +0200
+Subject: [PATCH] fix(system): xex delta patch corruption on aarch64 (#389)
+
+---
+ src/system/lzx.cpp        |  4 ++--
+ src/system/xex_module.cpp | 12 ++++++------
+ 2 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/src/system/lzx.cpp b/src/system/lzx.cpp
+index e3ffec47d..6279aa942 100644
+--- a/src/system/lzx.cpp
++++ b/src/system/lzx.cpp
+@@ -163,8 +163,8 @@ int lzxdelta_apply_patch(rex::xex2_delta_patch* patch, size_t patch_len, uint32_
+         std::memset((char*)dest + cur_patch->new_addr, 0, cur_patch->uncompressed_len);
+         break;
+       case 1:  // copy from old -> new
+-        std::memcpy((char*)dest + cur_patch->new_addr, (char*)dest + cur_patch->old_addr,
+-                    cur_patch->uncompressed_len);
++        std::memmove((char*)dest + cur_patch->new_addr, (char*)dest + cur_patch->old_addr,
++                     cur_patch->uncompressed_len);
+         break;
+       default:                                     // delta patch
+         patch_sz = cur_patch->compressed_len - 4;  // -4 because of patch_data field
+diff --git a/src/system/xex_module.cpp b/src/system/xex_module.cpp
+index f3c575958..072651642 100644
+--- a/src/system/xex_module.cpp
++++ b/src/system/xex_module.cpp
+@@ -254,9 +254,9 @@ int XexModule::ApplyPatch(XexModule* module) {
+   // If headers_source_offset is set, copy [source_offset:source_size] to
+   // target_offset
+   if (patch_header->delta_headers_source_offset) {
+-    memcpy(header_ptr + patch_header->delta_headers_target_offset,
+-           header_ptr + patch_header->delta_headers_source_offset,
+-           patch_header->delta_headers_source_size);
++    memmove(header_ptr + patch_header->delta_headers_target_offset,
++            header_ptr + patch_header->delta_headers_source_offset,
++            patch_header->delta_headers_source_size);
+   }
+ 
+   // If new size is smaller than original, null out the difference
+@@ -365,9 +365,9 @@ int XexModule::ApplyPatch(XexModule* module) {
+   // If image_source_offset is set, copy [source_offset:source_size] to
+   // target_offset
+   if (patch_header->delta_image_source_offset) {
+-    memcpy(base_exe + patch_header->delta_image_target_offset,
+-           base_exe + patch_header->delta_image_source_offset,
+-           patch_header->delta_image_source_size);
++    memmove(base_exe + patch_header->delta_image_target_offset,
++            base_exe + patch_header->delta_image_source_offset,
++            patch_header->delta_image_source_size);
+   }
+ 
+   // TODO: should we use new_image_size here instead?

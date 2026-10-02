@@ -1,0 +1,47 @@
+From e99203ef98b65f233024cba55168aa1ab075270c Mon Sep 17 00:00:00 2001
+From: Antonio Seevers <asm@dev313.com>
+Date: Tue, 18 Aug 2026 19:34:21 -0600
+Subject: [PATCH] Guard Vulkan pipeline variant binding
+
+---
+ src/graphics/vulkan/native_rhi_vulkan.cpp | 13 ++++++-------
+ 1 file changed, 6 insertions(+), 7 deletions(-)
+
+diff --git a/src/graphics/vulkan/native_rhi_vulkan.cpp b/src/graphics/vulkan/native_rhi_vulkan.cpp
+index 28fd5b0..037bcc7 100644
+--- a/src/graphics/vulkan/native_rhi_vulkan.cpp
++++ b/src/graphics/vulkan/native_rhi_vulkan.cpp
+@@ -1232,10 +1232,9 @@ class NrDeviceVulkan : public nrhi::Device {
+       delete pipeline;
+       return nullptr;
+     }
+-    // The strip twin is built EAGERLY: the scene destroys its shaders right
+-    // after pipeline creation (mirroring the D3D12 blob release), so a lazy
+-    // first-strip-draw build would reference freed VkShaderModules (this was
+-    // a driver crash on gameplay load).
++    // Build the strip twin before the scene releases its shader modules.
++    // Deferring this until the first draw caused the RG406V loading path to
++    // remain on a black frame, so keep the proven eager lifetime here.
+     pipeline->strip_pipeline = BuildPipeline(*pipeline, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
+     if (pipeline->strip_pipeline == VK_NULL_HANDLE) {
+       REXLOG_ERROR("nrhi-vulkan: strip pipeline creation failed");
+@@ -1709,9 +1708,8 @@ class NrDeviceVulkan : public nrhi::Device {
+     return entry.set;
+   }
+ 
+-  // Both topology variants are built eagerly at creation (the scene destroys
+-  // its shader modules right after CreateGraphicsPipeline, so nothing may be
+-  // built lazily from them at draw time).
++  // Both topology variants are available before the scene releases the
++  // shader modules used to create them.
+   VkPipeline GetPipelineVariant(NrPipelineVulkan* p, nrhi::PrimitiveTopology topology) {
+     return topology == nrhi::PrimitiveTopology::kTriangleList ? p->list_pipeline
+                                                               : p->strip_pipeline;
+@@ -2325,6 +2323,7 @@ bool NrCmdVulkan::EnsureDrawState() {
+   DeferredCommandBuffer& cmd = device->cp()->deferred_command_buffer();
+ 
+   VkPipeline variant = device->GetPipelineVariant(pipeline_, topology_);
++  if (variant == VK_NULL_HANDLE) return false;
+   if (variant != bound_pipeline_) {
+     cmd.CmdVkBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, variant);
+     bound_pipeline_ = variant;
