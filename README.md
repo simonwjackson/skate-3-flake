@@ -163,8 +163,10 @@ skate3_display_aspect = 1.3246753
 The aspect accepts 1.0 to 8.0. A screen taller than square gets a square
 picture with bars. Both settings need a restart.
 
-The source build renames upstream's settings, and the old names no longer
-work. The game logs `Config: unknown cvar` for an old name and ignores it.
+The source build renames upstream's settings. The old names are deprecated
+but still work: at startup the game copies an old key to its new name and
+logs `<old> is deprecated; use <new>`. If `settings.toml` has both names,
+the new name wins and the game logs that it ignored the old one.
 
 | Upstream release | Source build |
 |---|---|
@@ -172,8 +174,8 @@ work. The game logs `Config: unknown cvar` for an old name and ignores it.
 | `skate3_ultrawide_target_aspect` | `skate3_display_aspect` |
 | `skate3_ultrawide_widen_game_frustum` | `skate3_widen_game_frustum` |
 
-When you change from the release to the source build, rename these keys in
-`settings.toml`.
+To stop the warnings, rename these keys in `settings.toml`, or delete the
+old key once the new one is in the file.
 
 In the settings menu the option is called Aspect Ratio, Match Display. It
 needs the native renderer, which is the default.

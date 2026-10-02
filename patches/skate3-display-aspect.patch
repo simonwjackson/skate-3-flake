@@ -1,12 +1,18 @@
 Taller-than-16:9 display support (Vert+) for the game side of the native
 renderer, next to upstream's ultrawide (Hor+) mode. The display-aspect
-cvars get names that fit both directions (no aliases for the old ones):
+cvars get names that fit both directions:
 
   skate3_ultrawide                    -> skate3_match_display
   skate3_ultrawide_target_aspect      -> skate3_display_aspect (1.0 to 8.0)
   skate3_ultrawide_widen_game_frustum -> skate3_widen_game_frustum
 
-- skate3_app_common.cpp: drop the 16:9 floor on the target aspect.
+The old names stay registered as deprecated. When settings.toml loads, an
+old key is copied to its new name with a warning; if the new name is also
+in the file (or set on the command line), the new name wins. Nothing else
+reads the old names.
+
+- skate3_app_common.cpp: drop the 16:9 floor on the target aspect; rename
+  the cvars and migrate the deprecated ones.
 - skate3_native_scene.cpp: scale clip.y of the published camera (Vert+).
 - skate3_native_scene_gpu.cpp: letterbox the 16:9 2D stream (HUD, menus,
   FMV) and crop the photo grab to the same band.
@@ -39,7 +45,7 @@ index b145f41..da25f98 100644
  # window_width = 3440
  # window_height = 1440
 diff --git a/src/skate3_app_common.cpp b/src/skate3_app_common.cpp
-index a9126bf..27c649a 100644
+index a9126bf..9d815b4 100644
 --- a/src/skate3_app_common.cpp
 +++ b/src/skate3_app_common.cpp
 @@ -13,6 +13,7 @@
@@ -50,7 +56,7 @@ index a9126bf..27c649a 100644
  #include <cstring>
  #include <cstdint>
  #include <cstdlib>
-@@ -92,18 +93,21 @@ REXCVAR_DEFINE_STRING(skate3_dlc_root, "", "Skate 3",
+@@ -92,19 +93,32 @@ REXCVAR_DEFINE_STRING(skate3_dlc_root, "", "Skate 3",
                        "Directory containing Skate 3 DLC package files");
  REXCVAR_DEFINE_BOOL(skate3_auto_install_dlc, true, "Skate 3",
                      "Install DLC package files found in configured DLC folders");
@@ -69,18 +75,28 @@ index a9126bf..27c649a 100644
      .range(40.0, 120.0);
 -REXCVAR_DEFINE_BOOL(skate3_ultrawide_widen_game_frustum, true, "Skate 3",
 -                    "Widen the game-side main-world cull frustum to match the ultrawide view");
--REXCVAR_DEFINE_DOUBLE(skate3_ultrawide_target_aspect, 0.0, "Skate 3",
--                      "Ultrawide display aspect (0 = derive from the host display at boot)")
 +REXCVAR_DEFINE_BOOL(skate3_widen_game_frustum, true, "Skate 3",
 +                    "Widen the game-side main-world cull frustum to match a wider or taller "
 +                    "display (skate3_match_display)");
 +REXCVAR_DEFINE_DOUBLE(skate3_display_aspect, 0.0, "Skate 3",
 +                      "Display aspect for skate3_match_display, 1.0 to 8.0 (0 = derive from the "
 +                      "host display at boot; Linux fullscreen cannot derive it, set it here)")
++    .range(0.0, 8.0);
++// Deprecated names from when the mode only widened the picture. They are
++// read once when settings load and copied to the new names (see
++// MigrateDeprecatedDisplayCvars); nothing else reads them.
++REXCVAR_DEFINE_BOOL(skate3_ultrawide, false, "Skate 3", "Deprecated: use skate3_match_display")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ REXCVAR_DEFINE_DOUBLE(skate3_ultrawide_target_aspect, 0.0, "Skate 3",
+-                      "Ultrawide display aspect (0 = derive from the host display at boot)")
++                      "Deprecated: use skate3_display_aspect")
      .range(0.0, 8.0);
++REXCVAR_DEFINE_BOOL(skate3_ultrawide_widen_game_frustum, true, "Skate 3",
++                    "Deprecated: use skate3_widen_game_frustum");
  
  namespace {
-@@ -189,6 +193,15 @@ constexpr std::string_view kDlcDirectoryName = "dlc";
+ 
+@@ -189,6 +203,15 @@ constexpr std::string_view kDlcDirectoryName = "dlc";
  constexpr std::string_view kSavesDirectoryName = "saves";
  constexpr double kSixteenNineAspect = 16.0 / 9.0;
  constexpr double kUltrawideAspectEpsilon = 0.01;
@@ -96,7 +112,7 @@ index a9126bf..27c649a 100644
  
  struct DisplaySize {
    int32_t width = 0;
-@@ -263,34 +276,35 @@ std::optional<DisplaySize> ResolveUltrawideTargetDisplaySize() {
+@@ -263,34 +286,35 @@ std::optional<DisplaySize> ResolveUltrawideTargetDisplaySize() {
  }
  
  void ApplyUltrawideVideoDefaults() {
@@ -144,6 +160,62 @@ index a9126bf..27c649a 100644
  
    if (!rex::cvar::HasNonDefaultValue("present_letterbox")) {
      rex::cvar::SetFlagByName("present_letterbox", "true");
+@@ -412,10 +436,55 @@ void ApplyFirstRunVideoDefaults(const std::filesystem::path& settings_path,
+   rex::cvar::SetFlagByName("draw_resolution_scale_y", scale);
+ }
+ 
++// A cvar counts as set when settings.toml contains it, or when it differs
++// from its default (for example from the command line). The file test
++// matters: a saved new value equal to the default must still win over a
++// deprecated key.
++bool CvarIsSet(const toml::table* settings, std::string_view name) {
++  return (settings != nullptr && settings->contains(name)) ||
++         rex::cvar::HasNonDefaultValue(name);
++}
++
++// Copies a deprecated cvar to its new name. The new name wins when both are
++// set.
++void MigrateDeprecatedCvar(const toml::table* settings, std::string_view old_name,
++                           std::string_view new_name, std::string_view value) {
++  if (!CvarIsSet(settings, old_name)) {
++    return;
++  }
++  if (CvarIsSet(settings, new_name)) {
++    REXLOG_WARN("{} is deprecated and ignored because {} is set; remove it", old_name,
++                new_name);
++    return;
++  }
++  REXLOG_WARN("{} is deprecated; use {}", old_name, new_name);
++  rex::cvar::SetFlagByName(new_name, value);
++}
++
++void MigrateDeprecatedDisplayCvars(const std::filesystem::path& settings_path) {
++  std::optional<toml::table> settings;
++  if (std::filesystem::exists(settings_path)) {
++    try {
++      settings = toml::parse_file(settings_path.string());
++    } catch (const toml::parse_error&) {
++      // LoadConfig already reported the file; fall back to the defaults test.
++    }
++  }
++  const toml::table* table = settings ? &*settings : nullptr;
++  MigrateDeprecatedCvar(table, "skate3_ultrawide", "skate3_match_display",
++                        REXCVAR_GET(skate3_ultrawide) ? "true" : "false");
++  MigrateDeprecatedCvar(table, "skate3_ultrawide_target_aspect", "skate3_display_aspect",
++                        std::to_string(REXCVAR_GET(skate3_ultrawide_target_aspect)));
++  MigrateDeprecatedCvar(table, "skate3_ultrawide_widen_game_frustum",
++                        "skate3_widen_game_frustum",
++                        REXCVAR_GET(skate3_ultrawide_widen_game_frustum) ? "true" : "false");
++}
++
+ void LoadAndNormalizeSimpleSettings(const std::filesystem::path& settings_path,
+                                     const std::filesystem::path& developer_config_path) {
+   if (std::filesystem::exists(settings_path)) {
+     rex::cvar::LoadConfig(settings_path);
++    MigrateDeprecatedDisplayCvars(settings_path);
+   } else {
+     ApplyFirstRunVideoDefaults(settings_path, developer_config_path);
+   }
 diff --git a/src/skate3_native_scene.cpp b/src/skate3_native_scene.cpp
 index 5a7672b..1d21e9d 100644
 --- a/src/skate3_native_scene.cpp
