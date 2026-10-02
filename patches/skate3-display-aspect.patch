@@ -1,6 +1,10 @@
 Taller-than-16:9 display support (Vert+) for the game side of the native
-renderer, next to upstream's ultrawide (Hor+) mode. skate3_ultrawide now
-means "match the display aspect": 1.0 to 8.0, below 16:9 included.
+renderer, next to upstream's ultrawide (Hor+) mode. The display-aspect
+cvars get names that fit both directions (no aliases for the old ones):
+
+  skate3_ultrawide                    -> skate3_match_display
+  skate3_ultrawide_target_aspect      -> skate3_display_aspect (1.0 to 8.0)
+  skate3_ultrawide_widen_game_frustum -> skate3_widen_game_frustum
 
 - skate3_app_common.cpp: drop the 16:9 floor on the target aspect.
 - skate3_native_scene.cpp: scale clip.y of the published camera (Vert+).
@@ -9,9 +13,33 @@ means "match the display aspect": 1.0 to 8.0, below 16:9 included.
 - skate3_ultrawide_guest.h: widen the game's top/bottom cull planes
   (+5184/+5200) as well, under one shared lock. The old per-thread cache
   let concurrent cull workers re-widen planes already widened.
+- config/skate3.example.toml: the new names.
 
+diff --git a/config/skate3.example.toml b/config/skate3.example.toml
+index b145f41..da25f98 100644
+--- a/config/skate3.example.toml
++++ b/config/skate3.example.toml
+@@ -16,12 +16,13 @@ mnk_mode = false
+ mnk_capture_mouse = false
+ 
+ fullscreen = true
+-# Ultrawide (native renderer): true widescreen rendering at the host display
+-# aspect, derived from the fullscreen monitor on Windows or from an explicit
++# Match display (native renderer): draw the world at the host display
++# aspect, wider (Hor+) or taller (Vert+) than 16:9. The aspect is derived
++# from the fullscreen monitor on Windows or from an explicit
+ # window_width/window_height pair. The emulated renderer presents 16:9
+-# pillarboxed. skate3_ultrawide_target_aspect (default 0 = derive at boot)
+-# pins the aspect explicitly.
+-skate3_ultrawide = false
++# boxed. skate3_display_aspect (1.0 to 8.0, default 0 = derive at boot)
++# pins the aspect explicitly; Linux fullscreen needs it set.
++skate3_match_display = false
+ skate3_field_of_view = 60.0
+ # window_width = 3440
+ # window_height = 1440
 diff --git a/src/skate3_app_common.cpp b/src/skate3_app_common.cpp
-index a9126bf..156125b 100644
+index a9126bf..27c649a 100644
 --- a/src/skate3_app_common.cpp
 +++ b/src/skate3_app_common.cpp
 @@ -13,6 +13,7 @@
@@ -22,13 +50,15 @@ index a9126bf..156125b 100644
  #include <cstring>
  #include <cstdint>
  #include <cstdlib>
-@@ -93,9 +94,10 @@ REXCVAR_DEFINE_STRING(skate3_dlc_root, "", "Skate 3",
+@@ -92,18 +93,21 @@ REXCVAR_DEFINE_STRING(skate3_dlc_root, "", "Skate 3",
+                       "Directory containing Skate 3 DLC package files");
  REXCVAR_DEFINE_BOOL(skate3_auto_install_dlc, true, "Skate 3",
                      "Install DLC package files found in configured DLC folders");
- REXCVAR_DEFINE_BOOL(skate3_ultrawide, false, "Skate 3",
+-REXCVAR_DEFINE_BOOL(skate3_ultrawide, false, "Skate 3",
 -                    "Ultrawide display support: the native renderer draws true widescreen "
 -                    "frames at the host display aspect (requires the native renderer; the "
 -                    "emulated fallback presents 16:9 pillarboxed)")
++REXCVAR_DEFINE_BOOL(skate3_match_display, false, "Skate 3",
 +                    "Match the display aspect: the native renderer draws the world at the "
 +                    "host display aspect, wider (Hor+) or taller (Vert+) than 16:9 "
 +                    "(requires the native renderer; the emulated fallback presents 16:9 "
@@ -36,17 +66,21 @@ index a9126bf..156125b 100644
      .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
  REXCVAR_DEFINE_DOUBLE(skate3_field_of_view, 60.0, "Skate 3",
                        "Gameplay camera field of view in degrees")
-@@ -103,7 +105,8 @@ REXCVAR_DEFINE_DOUBLE(skate3_field_of_view, 60.0, "Skate 3",
- REXCVAR_DEFINE_BOOL(skate3_ultrawide_widen_game_frustum, true, "Skate 3",
-                     "Widen the game-side main-world cull frustum to match the ultrawide view");
- REXCVAR_DEFINE_DOUBLE(skate3_ultrawide_target_aspect, 0.0, "Skate 3",
+     .range(40.0, 120.0);
+-REXCVAR_DEFINE_BOOL(skate3_ultrawide_widen_game_frustum, true, "Skate 3",
+-                    "Widen the game-side main-world cull frustum to match the ultrawide view");
+-REXCVAR_DEFINE_DOUBLE(skate3_ultrawide_target_aspect, 0.0, "Skate 3",
 -                      "Ultrawide display aspect (0 = derive from the host display at boot)")
-+                      "Display aspect for skate3_ultrawide, 1.0 to 8.0 (0 = derive from the "
++REXCVAR_DEFINE_BOOL(skate3_widen_game_frustum, true, "Skate 3",
++                    "Widen the game-side main-world cull frustum to match a wider or taller "
++                    "display (skate3_match_display)");
++REXCVAR_DEFINE_DOUBLE(skate3_display_aspect, 0.0, "Skate 3",
++                      "Display aspect for skate3_match_display, 1.0 to 8.0 (0 = derive from the "
 +                      "host display at boot; Linux fullscreen cannot derive it, set it here)")
      .range(0.0, 8.0);
  
  namespace {
-@@ -189,6 +192,15 @@ constexpr std::string_view kDlcDirectoryName = "dlc";
+@@ -189,6 +193,15 @@ constexpr std::string_view kDlcDirectoryName = "dlc";
  constexpr std::string_view kSavesDirectoryName = "saves";
  constexpr double kSixteenNineAspect = 16.0 / 9.0;
  constexpr double kUltrawideAspectEpsilon = 0.01;
@@ -62,9 +96,21 @@ index a9126bf..156125b 100644
  
  struct DisplaySize {
    int32_t width = 0;
-@@ -272,25 +284,26 @@ void ApplyUltrawideVideoDefaults() {
-   double target_aspect = rex::cvar::HasNonDefaultValue("skate3_ultrawide_target_aspect")
-                              ? REXCVAR_GET(skate3_ultrawide_target_aspect)
+@@ -263,34 +276,35 @@ std::optional<DisplaySize> ResolveUltrawideTargetDisplaySize() {
+ }
+ 
+ void ApplyUltrawideVideoDefaults() {
+-  if (!REXCVAR_GET(skate3_ultrawide)) {
++  if (!REXCVAR_GET(skate3_match_display)) {
+     return;
+   }
+ 
+   // Explicitly configured aspect wins; otherwise derive it from the
+   // fullscreen monitor (or a configured window size) once at boot.
+-  double target_aspect = rex::cvar::HasNonDefaultValue("skate3_ultrawide_target_aspect")
+-                             ? REXCVAR_GET(skate3_ultrawide_target_aspect)
++  double target_aspect = rex::cvar::HasNonDefaultValue("skate3_display_aspect")
++                             ? REXCVAR_GET(skate3_display_aspect)
                               : 0.0;
 -  if (target_aspect <= kSixteenNineAspect + kUltrawideAspectEpsilon) {
 +  if (!IsReshapedAspect(target_aspect)) {
@@ -81,7 +127,7 @@ index a9126bf..156125b 100644
 -    rex::cvar::SetFlagByName("skate3_ultrawide_target_aspect", std::to_string(target_aspect));
    }
 +  target_aspect = std::clamp(target_aspect, kMinTargetAspect, kMaxTargetAspect);
-+  rex::cvar::SetFlagByName("skate3_ultrawide_target_aspect", std::to_string(target_aspect));
++  rex::cvar::SetFlagByName("skate3_display_aspect", std::to_string(target_aspect));
  
 -  // The native renderer draws true wide frames at this aspect (wide guest
 -  // output + Hor+ projection + centered 2D band). Emulated fallback frames
@@ -279,10 +325,10 @@ index f2009df..91f4043 100644
          // (0,0,0,1)); perspective view-proj rows do. Half-pixel applies to
          // the former only.
 diff --git a/src/skate3_ultrawide_guest.h b/src/skate3_ultrawide_guest.h
-index 859ff50..854ff05 100644
+index 859ff50..73512f9 100644
 --- a/src/skate3_ultrawide_guest.h
 +++ b/src/skate3_ultrawide_guest.h
-@@ -5,17 +5,23 @@
+@@ -5,38 +5,44 @@
  #include <cmath>
  #include <cstddef>
  #include <cstdint>
@@ -308,18 +354,19 @@ index 859ff50..854ff05 100644
 +// wider display, top/bottom for a taller one.
 +
 +inline double Skate3UltrawideTargetAspect() {
-+  return std::clamp(rex::cvar::Query<double>("skate3_ultrawide_target_aspect"), 1.0, 8.0);
++  return std::clamp(rex::cvar::Query<double>("skate3_display_aspect"), 1.0, 8.0);
 +}
  
  inline bool Skate3UltrawideHasExpandedTargetAspect() {
-   if (!rex::cvar::Query<bool>("skate3_ultrawide") ||
-@@ -23,17 +29,17 @@ inline bool Skate3UltrawideHasExpandedTargetAspect() {
+-  if (!rex::cvar::Query<bool>("skate3_ultrawide") ||
++  if (!rex::cvar::Query<bool>("skate3_match_display") ||
+       !rex::graphics::IsNativeGuestOutputActive()) {
      return false;
    }
  
 -  return rex::cvar::Query<double>("skate3_ultrawide_target_aspect") >
 -         (16.0 / 9.0) + 0.01;
-+  const double aspect = rex::cvar::Query<double>("skate3_ultrawide_target_aspect");
++  const double aspect = rex::cvar::Query<double>("skate3_display_aspect");
 +  return aspect > 0.0 && std::abs(aspect - (16.0 / 9.0)) > 0.01;
  }
  
@@ -338,7 +385,11 @@ index 859ff50..854ff05 100644
 +  // plane sanity checks below still veto implausible data.
    (void)base;
    return cull_block != 0 && Skate3UltrawideHasExpandedTargetAspect() &&
-          rex::cvar::Query<bool>("skate3_ultrawide_widen_game_frustum");
+-         rex::cvar::Query<bool>("skate3_ultrawide_widen_game_frustum");
++         rex::cvar::Query<bool>("skate3_widen_game_frustum");
+ }
+ 
+ struct Skate3UltrawideGameFrustumPatchScope {
 @@ -46,48 +52,21 @@ struct Skate3UltrawideGameFrustumPatchScope {
        return;
      }

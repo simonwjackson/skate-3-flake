@@ -1,7 +1,8 @@
 SDK side of taller-than-16:9 display support: the native guest output
 grows in height (width kept) when the target aspect is taller than the
 frontbuffer, the guest keeps its 16:9 video mode for any non-16:9 target,
-and the settings menu calls the option "Match Display".
+and the settings menu calls the option "Match Display". Reads the renamed
+cvars skate3_match_display and skate3_display_aspect.
 
 diff --git a/include/rex/graphics/native_guest_renderer.h b/include/rex/graphics/native_guest_renderer.h
 index a2ce48c..ac81fe3 100644
@@ -86,7 +87,7 @@ index dd39116..64dca93 100644
    // wide image edge-to-edge on a matching window.
    display_width = guest_output_width;
 diff --git a/src/kernel/xboxkrnl/xboxkrnl_video.cpp b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
-index 73f5c99..28e2098 100644
+index 73f5c99..2db19b8 100644
 --- a/src/kernel/xboxkrnl/xboxkrnl_video.cpp
 +++ b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
 @@ -13,6 +13,7 @@
@@ -111,14 +112,14 @@ index 73f5c99..28e2098 100644
 -  return rex::cvar::Query<bool>("skate3_ultrawide") &&
 -         rex::cvar::Query<double>("skate3_ultrawide_target_aspect") >
 -             kSkate3BaseAspect + 0.01;
-+  const double aspect = rex::cvar::Query<double>("skate3_ultrawide_target_aspect");
-+  return rex::cvar::Query<bool>("skate3_ultrawide") && aspect > 0.0 &&
++  const double aspect = rex::cvar::Query<double>("skate3_display_aspect");
++  return rex::cvar::Query<bool>("skate3_match_display") && aspect > 0.0 &&
 +         std::abs(aspect - kSkate3BaseAspect) > 0.01;
  }
  
  uint32_t GetConfiguredVideoModeWidth() {
 diff --git a/src/ui/overlay/simple_settings_overlay.cpp b/src/ui/overlay/simple_settings_overlay.cpp
-index c22345f..dc830e3 100644
+index c22345f..5fd28dd 100644
 --- a/src/ui/overlay/simple_settings_overlay.cpp
 +++ b/src/ui/overlay/simple_settings_overlay.cpp
 @@ -38,7 +38,7 @@ namespace {
@@ -130,7 +131,55 @@ index c22345f..dc830e3 100644
  constexpr std::array<double, 6> kFrameCapRates = {60.0, 90.0, 120.0, 144.0, 165.0, 240.0};
  constexpr std::array<const char*, 7> kFrameCapLabels = {"Unlimited", "60 FPS",  "90 FPS",
                                                          "120 FPS",   "144 FPS", "165 FPS",
-@@ -1385,9 +1385,10 @@ void SimpleSettingsDialog::BuildRows(std::vector<RowSpec>& rows, int category) {
+@@ -233,8 +233,8 @@ std::vector<std::string_view> GetSimpleSettingsCvars() {
+   if (HasCvar("gpu_backend") && HasCvar("d3d12_adapter") && HasCvar("vulkan_device")) {
+     cvars.push_back("gpu_backend");
+   }
+-  if (HasCvar("skate3_ultrawide")) {
+-    cvars.push_back("skate3_ultrawide");
++  if (HasCvar("skate3_match_display")) {
++    cvars.push_back("skate3_match_display");
+   }
+   if (HasCvar("skate3_field_of_view")) {
+     cvars.push_back("skate3_field_of_view");
+@@ -1015,7 +1015,7 @@ void SimpleSettingsDialog::LoadSettingsFromCvars() {
+   resolution_scale_index_ = ResolutionIndexFromCvar();
+   frame_cap_index_ = FrameCapIndexFromCvar();
+   aspect_ratio_index_ =
+-      HasCvar("skate3_ultrawide") && rex::cvar::Query<bool>("skate3_ultrawide") ? 1 : 0;
++      HasCvar("skate3_match_display") && rex::cvar::Query<bool>("skate3_match_display") ? 1 : 0;
+   msaa_index_ = MsaaIndexFromCvar();
+   shadow_quality_index_ = ShadowQualityIndexFromCvar();
+   static_shadow_res_index_ = StaticShadowResIndexFromCvar();
+@@ -1065,8 +1065,8 @@ bool SimpleSettingsDialog::HasSettingsChanges() const {
+          device_index_ != DeviceIndexFromCvar(device_list_) ||
+          resolution_scale_index_ != ResolutionIndexFromCvar() ||
+          frame_cap_index_ != FrameCapIndexFromCvar() ||
+-         (HasCvar("skate3_ultrawide") &&
+-          (aspect_ratio_index_ != 0) != rex::cvar::Query<bool>("skate3_ultrawide")) ||
++         (HasCvar("skate3_match_display") &&
++          (aspect_ratio_index_ != 0) != rex::cvar::Query<bool>("skate3_match_display")) ||
+          (HasMsaaCvar() && msaa_index_ != MsaaIndexFromCvar()) ||
+          (HasShadowQualityCvars() && shadow_quality_index_ != ShadowQualityIndexFromCvar()) ||
+          (HasStaticShadowCvars() &&
+@@ -1185,8 +1185,8 @@ void SimpleSettingsDialog::SaveVideo() {
+     }
+   }
+   SetBoolCvar("fullscreen", fullscreen_);
+-  if (HasCvar("skate3_ultrawide")) {
+-    SetBoolCvar("skate3_ultrawide", aspect_ratio_index_ != 0);
++  if (HasCvar("skate3_match_display")) {
++    SetBoolCvar("skate3_match_display", aspect_ratio_index_ != 0);
+   }
+   if (HasFieldOfViewCvar()) {
+     rex::cvar::SetFlagByName("skate3_field_of_view", std::to_string(field_of_view_));
+@@ -1380,20 +1380,21 @@ void SimpleSettingsDialog::BuildRows(std::vector<RowSpec>& rows, int category) {
+         };
+         rows.push_back(std::move(row));
+       }
+-      if (HasCvar("skate3_ultrawide")) {
++      if (HasCvar("skate3_match_display")) {
+         RowSpec row;
          row.kind = RowSpec::kEnum;
          row.label = "Aspect Ratio";
          row.desc =
@@ -144,3 +193,10 @@ index c22345f..dc830e3 100644
          for (const char* label : kAspectRatioLabels) {
            row.options.push_back(label);
          }
+         row.index = &aspect_ratio_index_;
+         row.reset = [this] {
+-          aspect_ratio_index_ = CvarDefaultBool("skate3_ultrawide", false) ? 1 : 0;
++          aspect_ratio_index_ = CvarDefaultBool("skate3_match_display", false) ? 1 : 0;
+         };
+         rows.push_back(std::move(row));
+       }

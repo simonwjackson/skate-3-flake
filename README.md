@@ -143,7 +143,7 @@ Android driver. On Linux the GPU driver is Mesa turnip, which is untested
 with this renderer. A handheld also needs lower settings than a desktop:
 start with `resolution_scale = 1` and MSAA off.
 
-### Taller screens (4:3, foldables)
+### Match display: wider and taller screens
 
 Upstream's ultrawide mode only makes the picture wider. The source build
 also makes it taller: on a screen narrower than 16:9 the game shows more
@@ -152,17 +152,31 @@ the screen. The HUD, menus and movies stay 16:9, centred, with bars above
 and below.
 
 On Linux the game cannot read the fullscreen monitor size, so set the
-aspect yourself in `~/.local/share/skate3/settings.toml`. For a 2448x1848
-screen:
+aspect (width divided by height) yourself in
+`~/.local/share/skate3/settings.toml`. For a 2448x1848 screen:
 
 ```toml
-skate3_ultrawide = true
-skate3_ultrawide_target_aspect = 1.3246753
+skate3_match_display = true
+skate3_display_aspect = 1.3246753
 ```
 
-The setting accepts 1.0 to 8.0 and needs a restart. In the settings menu the
-option is called Aspect Ratio, Match Display. It needs the native renderer,
-which is the default.
+The aspect accepts 1.0 to 8.0. A screen taller than square gets a square
+picture with bars. Both settings need a restart.
+
+The source build renames upstream's settings, and the old names no longer
+work. The game logs `Config: unknown cvar` for an old name and ignores it.
+
+| Upstream release | Source build |
+|---|---|
+| `skate3_ultrawide` | `skate3_match_display` |
+| `skate3_ultrawide_target_aspect` | `skate3_display_aspect` |
+| `skate3_ultrawide_widen_game_frustum` | `skate3_widen_game_frustum` |
+
+When you change from the release to the source build, rename these keys in
+`settings.toml`.
+
+In the settings menu the option is called Aspect Ratio, Match Display. It
+needs the native renderer, which is the default.
 
 The guest output keeps its width and grows in height, so a taller screen
 costs more GPU time. At render scale 3 a 4:3 frame is 3840x2900. Render
