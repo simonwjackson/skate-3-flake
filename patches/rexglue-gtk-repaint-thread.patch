@@ -1,0 +1,107 @@
+Dispatch GTK repaint requests on the UI thread.
+
+Window::RequestPaint explicitly permits non-UI callers. The GTK backend
+called gtk_widget_queue_draw directly from the GPU command thread, violating
+GTK's threading contract. Three aka core dumps crashed in g_slist_find via
+GDK invalidation from Presenter::RefreshGuestOutput; a live debugger caught
+the same worker-thread call on its first breakpoint hit.
+
+Use the same mutex-protected gdk_threads_add_idle dispatch as the existing
+GTKWindowedAppContext. Coalesce requests and cancel the source after surface
+disconnection, on both close and destruction, before its owner disappears.
+No synchronous call into the UI loop: the caller may hold paint_mode_mutex_.
+Windows and SDL backends are unchanged.
+
+The real GTKWindow regression test is tests/gtk-repaint.cpp in this flake.
+It checks UI-thread ownership, coalescing, close/reopen and pending destruction.
+
+diff --git a/include/rex/ui/window_gtk.h b/include/rex/ui/window_gtk.h
+--- a/include/rex/ui/window_gtk.h
++++ b/include/rex/ui/window_gtk.h
+@@ -12,6 +12,7 @@
+ #pragma once
+ 
+ #include <memory>
++#include <mutex>
+ #include <string>
+ 
+ #include <rex/platform.h>
+@@ -53,6 +54,9 @@
+   void RequestPaintImpl() override;
+ 
+  private:
++  static gboolean PaintSourceFunc(gpointer data);
++  void CancelPendingPaint();
++
+   void UpdateDpi(WindowDestructionReceiver* destruction_receiver = nullptr);
+   void HandleSizeUpdate(WindowDestructionReceiver& destruction_receiver);
+   // For updating multiple factors that may influence the window size at once,
+@@ -76,6 +80,11 @@
+   static gboolean DrawingAreaEventHandlerThunk(GtkWidget* widget, GdkEvent* event,
+                                                gpointer user_data);
+   static gboolean DrawHandler(GtkWidget* widget, cairo_t* cr, gpointer data);
++
++  // RequestPaint may run on the GPU thread. The source ID is shared with
++  // the UI callback; widget access and source cancellation stay on the UI thread.
++  std::mutex paint_source_mutex_;
++  guint paint_source_ = 0;
+ 
+   // Non-owning (initially floating) references to the widgets.
+   GtkWidget* window_ = nullptr;
+diff --git a/src/ui/window_gtk.cpp b/src/ui/window_gtk.cpp
+--- a/src/ui/window_gtk.cpp
++++ b/src/ui/window_gtk.cpp
+@@ -361,6 +361,7 @@
+ 
+ GTKWindow::~GTKWindow() {
+   EnterDestructor();
++  CancelPendingPaint();
+   if (cursor_auto_hide_timer_) {
+     g_source_remove(cursor_auto_hide_timer_);
+     cursor_auto_hide_timer_ = 0;
+@@ -684,7 +685,36 @@
+ }
+ 
+ void GTKWindow::RequestPaintImpl() {
+-  gtk_widget_queue_draw(drawing_area_);
++  // RequestPaint permits non-UI callers, but GTK widget access does not.
++  // Match GTKWindowedAppContext's idle-source dispatch and coalesce requests.
++  std::lock_guard<std::mutex> lock(paint_source_mutex_);
++  if (!paint_source_) {
++    paint_source_ = gdk_threads_add_idle(PaintSourceFunc, this);
++  }
++}
++
++gboolean GTKWindow::PaintSourceFunc(gpointer data) {
++  auto& window = *static_cast<GTKWindow*>(data);
++  assert_true(window.app_context().IsInUIThread());
++  {
++    std::lock_guard<std::mutex> lock(window.paint_source_mutex_);
++    window.paint_source_ = 0;
++  }
++  if (window.drawing_area_) {
++    gtk_widget_queue_draw(window.drawing_area_);
++  }
++  return G_SOURCE_REMOVE;
++}
++
++void GTKWindow::CancelPendingPaint() {
++  // Called after surface disconnection has stopped non-UI paint requests.
++  // The callback also runs on this thread, so it cannot race destruction.
++  assert_true(app_context().IsInUIThread());
++  std::lock_guard<std::mutex> lock(paint_source_mutex_);
++  if (paint_source_) {
++    g_source_remove(paint_source_);
++    paint_source_ = 0;
++  }
+ }
+ 
+ void GTKWindow::HandleSizeUpdate(WindowDestructionReceiver& destruction_receiver) {
+@@ -859,6 +889,7 @@
+       if (destruction_receiver.IsWindowDestroyed()) {
+         break;
+       }
++      CancelPendingPaint();
+       // Set window_ to null to ignore events from now on since this
+       // ui::GTKWindow is entering an indeterminate state - this should be done
+       // at some point in closing anyway.

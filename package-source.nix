@@ -22,6 +22,7 @@
   ninja,
   pkg-config,
   python3,
+  xvfb-run,
   autoPatchelfHook,
   wrapGAppsHook3,
   gtk3,
@@ -141,6 +142,9 @@ stdenv.mkDerivation {
 
     # Free guest memory on any exit, not only a clean one (rexglue-sdk#445).
     patch -p1 -d third_party/rexglue-sdk < ${./patches/rexglue-shm-unlink-early.patch}
+
+    # Window::RequestPaint allows GPU-thread callers; GTK widget access does not.
+    patch -p1 -d third_party/rexglue-sdk < ${./patches/rexglue-gtk-repaint-thread.patch}
   ''
   # ARM64 fixes the Skate rexglue fork predates. The first three are upstream
   # rexglue-sdk commits; the last is from Buku313's Android fork. They are
@@ -220,6 +224,23 @@ stdenv.mkDerivation {
     conf
     cmake --build build --parallel $NIX_BUILD_CORES
     runHook postBuild
+  '';
+
+  doCheck = true;
+  nativeCheckInputs = [ xvfb-run ];
+  checkPhase = ''
+    runHook preCheck
+    # Link the real GTKWindow and pump a real GTK loop without a GPU or game.
+    $CXX -std=c++23 -pthread -Wl,--export-dynamic \
+      -Ithird_party/rexglue-sdk/include \
+      -Ithird_party/rexglue-sdk/thirdparty/fmt/include \
+      -Ithird_party/rexglue-sdk/thirdparty/spdlog/include \
+      $(pkg-config --cflags gtk+-3.0) \
+      ${./tests/gtk-repaint.cpp} -Lbuild -lrexruntime \
+      $(pkg-config --libs gtk+-3.0) -ldl -o build/gtk-repaint-test
+    LD_LIBRARY_PATH="$PWD/build:$LD_LIBRARY_PATH" G_DEBUG=fatal-warnings \
+      xvfb-run -a timeout 60 build/gtk-repaint-test
+    runHook postCheck
   '';
 
   installPhase = ''

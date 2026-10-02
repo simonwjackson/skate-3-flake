@@ -117,6 +117,23 @@ Differences from the upstream release build:
 | `patches/skate3-display-aspect.patch`, `patches/rexglue-display-aspect.patch` | Taller-than-16:9 displays. See below. |
 | `patches/rexglue-shm-unlink-early.patch` | Guest memory is a 4.8 GB file in `/dev/shm` that upstream deletes only on a clean shutdown, so every kill or crash leaves one behind until `/dev/shm` fills and the game no longer starts. The patch deletes the name right after creation; the kernel frees the memory when the game exits. Upstream issue: rexglue/rexglue-sdk#445. |
 
+### GTK redraw safety
+
+`patches/rexglue-gtk-repaint-thread.patch` fixes a Linux crash in GTK redraws.
+The GPU command thread called `gtk_widget_queue_draw` directly. The patch
+queues that call on the UI thread, combines pending requests, and cancels them
+before the window closes or is destroyed. It follows the existing GTK app
+context's idle-source pattern. Windows and SDL are unchanged.
+
+The cost is one UI-loop dispatch per redraw and another SDK patch to maintain.
+This does not claim to fix crashes outside this redraw path.
+
+The source build runs `tests/gtk-repaint.cpp` against the actual runtime under
+Xvfb. The test checks thread ownership, request coalescing, close/reopen, and
+destruction with a redraw pending. The original runtime fails with
+`GTK redraw outside UI thread`. Rebuild with `nix build -L .#skate3-source` to
+run it. As with every source build, the required disc files must be in the store.
+
 ### ARM64
 
 `packages.aarch64-linux.skate3-source` builds the same source for 64-bit
