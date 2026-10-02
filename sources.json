@@ -1,0 +1,177 @@
+[
+  {
+    "path": ".",
+    "owner": "mchughalex",
+    "repo": "skate3recomp",
+    "rev": "f6e0ae87fdfecbadb5c1e36c55d66a744187a3cd",
+    "hash": "sha256-XELBJVIo89X70dMIHTdDly1caPO/dwoDEJZWSKpHxSc="
+  },
+  {
+    "path": "third_party/rexglue-sdk",
+    "owner": "mchughalex",
+    "repo": "rexglue-skate3",
+    "rev": "7eb0faf7787f5e01333c228b8e3f03c32f7295ea",
+    "hash": "sha256-o9LAw5C1SqyC7fYtOOgIYhvuCK4Xvnpg3SVRT5vM4pc="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/libmspack",
+    "owner": "kyz",
+    "repo": "libmspack",
+    "rev": "305907723a4e7ab2018e58040059ffb5e77db837",
+    "hash": "sha256-61Mgf4cCaKpm4TSujsz6Pb8V0Ji0XqwqsfDrZ8o6WvU="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/glslang",
+    "owner": "KhronosGroup",
+    "repo": "glslang",
+    "rev": "f4f1d8a352ca1908943aea2ad8c54b39b4879080",
+    "hash": "sha256-nxAqs1RbrG8QHDJgHYjXbuNsdcYSSOM+CjRtUI8Fl7A="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/FFmpeg",
+    "owner": "wmarti",
+    "repo": "FFmpeg",
+    "rev": "0604b464c7cb4ebc94940cf1f324a3b26b87717c",
+    "hash": "sha256-eFWd8isxxtGCHs2UhLAHv+0hvwwbrWmfMWWOTlERb20="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/tomlplusplus",
+    "owner": "marzer",
+    "repo": "tomlplusplus",
+    "rev": "30172438cee64926dc41fdd9c11fb3ba5b2ba9de",
+    "hash": "sha256-h5tbO0Rv2tZezY58yUbyRVpsfRjY3i+5TPkkxr6La8M="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/simde",
+    "owner": "simd-everywhere",
+    "repo": "simde",
+    "rev": "71fd833d9666141edcd1d3c109a80e228303d8d7",
+    "hash": "sha256-igjDHCpKXy6EbA9Mf6peL4OTVRPYTV0Y2jbgYQuWMT4="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/xxHash",
+    "owner": "Cyan4973",
+    "repo": "xxHash",
+    "rev": "e626a72bc2321cd320e953a0ccf1584cad60f363",
+    "hash": "sha256-h6kohM+NxvQ89R9NEXZcYBG2wPOuB4mcyPfofKrx9wQ="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/spdlog",
+    "owner": "gabime",
+    "repo": "spdlog",
+    "rev": "79524ddd08a4ec981b7fea76afd08ee05f83755d",
+    "hash": "sha256-bL3hQmERXNwGmDoi7+wLv/TkppGhG6cO47k1iZvJGzY="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/fmt",
+    "owner": "fmtlib",
+    "repo": "fmt",
+    "rev": "407c905e45ad75fc29bf0f9bb7c5c2fd3475976f",
+    "hash": "sha256-ZmI1Dv0ZabPlxa02OpERI47jp7zFfjpeWCy1WyuPYZ0="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/catch2",
+    "owner": "catchorg",
+    "repo": "Catch2",
+    "rev": "88abf9bf325c798c33f54f6b9220ef885b267f4f",
+    "hash": "sha256-M1n2jWiA0hNCNqO3zSXRANiaMVCebn7/VU/4FfcjoA8="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/snappy",
+    "owner": "google",
+    "repo": "snappy",
+    "rev": "6af9287fbdb913f0794d0148c6aa43b58e63c8e3",
+    "hash": "sha256-bMZD8EI9dvDGupfos4hi/0ShBkrJlI5Np9FxE6FfrNE="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/utfcpp",
+    "owner": "nemtrif",
+    "repo": "utfcpp",
+    "rev": "63d64de49fd6b829f7c8694df5ab2ee625cb7134",
+    "hash": "sha256-0FgMKHymFOA3BM7VS8US2is8TmQlL/wWj4nSRihqcDo="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/volk",
+    "owner": "zeux",
+    "repo": "volk",
+    "rev": "0b17a763ba5643e32da1b2152f8140461b3b7345",
+    "hash": "sha256-+SLGRvCUKFntz60/xL/NjoFjvvATWMImR4CGnCHUj2o="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/vulkan-headers",
+    "owner": "KhronosGroup",
+    "repo": "Vulkan-Headers",
+    "rev": "49f1a381e2aec33ef32adf4a377b5a39ec016ec4",
+    "hash": "sha256-K/8X9D7B0o6+osOzScplwea+OsfM3srAtDKCgfZpcJU="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/vulkan-memory-allocator",
+    "owner": "GPUOpen-LibrariesAndSDKs",
+    "repo": "VulkanMemoryAllocator",
+    "rev": "1d8f600fd424278486eade7ed3e877c99f0846b1",
+    "hash": "sha256-TPEqV8uHbnyphLG0A+b2tgLDQ6K7a2dOuDHlaFPzTeE="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/imgui",
+    "owner": "ocornut",
+    "repo": "imgui",
+    "rev": "6d910d5487d11ca567b61c7824b0c78c569d62f0",
+    "hash": "sha256-9A+qRsrsFxLAeDeV60qFTiBmg2XBKgERAxKZgD8AwTM="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/spirv-tools",
+    "owner": "KhronosGroup",
+    "repo": "SPIRV-Tools",
+    "rev": "04d0b166dcd62e29509bf2aac3ca0c5ccdcb6929",
+    "hash": "sha256-jCWpyhfe6phqebKzUEFrdAOanRdQFxz7/j7l18HF0ws="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/spirv-headers",
+    "owner": "KhronosGroup",
+    "repo": "SPIRV-Headers",
+    "rev": "04f10f650d514df88b76d25e83db360142c7b174",
+    "hash": "sha256-aYKFJxRDoY/Cor8gYVoR/YSyXWSNtcRG0HK8BZH0Ztk="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/cli11",
+    "owner": "CLIUtils",
+    "repo": "CLI11",
+    "rev": "bfffd37e1f804ca4fae1caae106935791696b6a9",
+    "hash": "sha256-q5q6TgSex0xjdWFf/4e6dhrN0qWPDjIgWBpdkCTlLys="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/o1heap",
+    "owner": "pavel-kirienko",
+    "repo": "o1heap",
+    "rev": "388a73fd9007300e5130c5fe352d9ce3288b6dde",
+    "hash": "sha256-kouk51HCVdUpoGgN46nNIhNAbM5qcPKUv+7xV8mPMyc="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/sdl3",
+    "owner": "libsdl-org",
+    "repo": "SDL",
+    "rev": "8bf3b7215ad9fc3deb583c6a3a37c6c67f2e24e4",
+    "hash": "sha256-Tiz0XwH0/hHVo89rll6XwOSNlTegpb3pnzWexiGqA74="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/inja",
+    "owner": "pantor",
+    "repo": "inja",
+    "rev": "7d1b4600b68595085a949743331c2e5673f511ea",
+    "hash": "sha256-P4XKz2FcMfP0HRMoEC2+RKE/ljZSpusUTDmF9Ao5txo="
+  },
+  {
+    "path": "third_party/rexglue-sdk/thirdparty/tracy",
+    "owner": "wolfpld",
+    "repo": "tracy",
+    "rev": "05cceee0df3b8d7c6fa87e9638af311dbabc63cb",
+    "hash": "sha256-D4aQ5kSfWH9qEUaithR0W/E5pN5on0n9YoBHeMggMSE="
+  },
+  {
+    "path": "fetchcontent/freetype",
+    "owner": "freetype",
+    "repo": "freetype",
+    "rev": "VER-2-13-3",
+    "hash": "sha256-4l90lDtpgm5xlh2m7ifrqNy373DTRTULRkAzicrM93c="
+  }
+]

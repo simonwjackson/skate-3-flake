@@ -69,7 +69,9 @@ Arguments after `--` go to the game, for example
 |---|---|
 | `packages.x86_64-linux.default`, `.skate3` | The `skate3` launcher. It picks writable folders, then starts the game. |
 | `packages.x86_64-linux.skate3-unwrapped` | The patched upstream binary and `librexruntime.so`. |
-| `apps.x86_64-linux.default` | `nix run` target. |
+| `packages.x86_64-linux.skate3-source` | The same launcher around the source build. |
+| `packages.x86_64-linux.skate3-source-unwrapped` | The source build. |
+| `apps.x86_64-linux.default`, `.source` | `nix run` targets for the release and the source build. |
 
 ## Update to a new upstream release
 
@@ -79,6 +81,36 @@ Edit `version` and `hash` in `package.nix`. Get the hash from the release's
 ```sh
 nix hash convert --hash-algo sha256 --to sri <hex digest>
 ```
+
+## Build from source
+
+`packages.x86_64-linux.skate3-source` builds the same v2.0.2 from source,
+as a base for local patches. Static recompilation turns the game's own code
+into C++ at build time, so the build needs two files from your Xbox 360 disc.
+After a normal install they are in the game folder. Add them to the store by
+hash, then build:
+
+```sh
+nix-store --add-fixed sha256 \
+  ~/.local/share/skate3/game/default.xex \
+  ~/.local/share/skate3/game/data/webkit/EAWebkit.xex
+nix run github:simonwjackson/skate-3-flake#source
+```
+
+The build fetches Title Update 3 from the same URL the game's installer
+uses. On a Ryzen 5 7600X it takes about 10 minutes.
+
+The result contains code generated from EA's game. Do not push it to a
+binary cache that other people can read.
+
+Differences from the upstream release build:
+
+| What | Why |
+|---|---|
+| imgui 1.92.5 plus `patches/imgui-rasterizer-gamma.patch` | The rexglue fork pins imgui commit `cdda6234`, which was never published. The patch rebuilds the one API the fork uses, `ImFontConfig::RasterizerGamma`. Other unpublished imgui changes, if any, are missing. Menu text may differ slightly. |
+| `patches/rexglue-codegen-quick-exit.patch` | The codegen tool crashes in static destructors after it finishes, which fails the build step. The patch exits without running them. |
+| Each submodule pinned in `sources.json` | Needed because of the broken imgui pin. |
+| Version string `2.0.2-nix` | The store copy has no `.git`. |
 
 ## Upstream known issues on Linux
 

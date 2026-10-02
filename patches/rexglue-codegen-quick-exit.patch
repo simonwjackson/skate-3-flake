@@ -1,0 +1,24 @@
+diff --git a/src/rexglue/main.cpp b/src/rexglue/main.cpp
+index 84a4f71..d8c7f7a 100644
+--- a/src/rexglue/main.cpp
++++ b/src/rexglue/main.cpp
+@@ -13,6 +13,7 @@
+ #include "ui/ui.h"
+ 
+ #include <chrono>
++#include <cstdio>
+ #include <cstdlib>
+ #include <filesystem>
+ #include <map>
+@@ -162,5 +163,10 @@ int main(int argc, char** argv) {
+     rexglue::ui::DoneSummary(elapsed);
+   }
+   rexglue::ui::Shutdown();
+-  return exit_code;
++  // Nix packaging: the cvar registrars live in both this tool and
++  // librexruntime.so; at exit the second unregister reads an already
++  // destroyed registry and segfaults after the work is done. All output
++  // files are closed by now, so leave without running static destructors.
++  std::fflush(nullptr);
++  std::_Exit(exit_code);
+ }
