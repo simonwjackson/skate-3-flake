@@ -32,7 +32,7 @@ bash /root/mini-movie-probe.sh native /nix/store/EXACT-skate3 /root/movie-native
 bash /root/mini-movie-probe.sh fallback /nix/store/EXACT-skate3 /root/movie-fallback-run
 ```
 
-An optional fourth argument names a prebuilt `vulkan-validation-layers` store path. Deliver that package from a build machine too.
+An optional fourth argument names a prebuilt `vulkan-validation-layers` store path. Deliver that package from a build machine too. A fifth argument adds up to 180 seconds of observation, with captures every ten seconds. Pass an empty fourth argument to observe without validation.
 
 The probe fails if movie entry does not occur, the game exits, a new GPU fault appears, or three successive captures are identical. Changing pixels alone do not prove correct movies: inspect the captures for actual movie content, not merely an updating FPS overlay. Also check movie completion, return to native output, and a repeat launch.
 

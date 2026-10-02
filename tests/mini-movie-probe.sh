@@ -7,6 +7,8 @@ mode=${1:?native|fallback|disabled}
 out=${2:?prebuilt store path}
 evidence=${3:?new evidence directory}
 validation=${4:-}
+observe_seconds=${5:-0}
+[[ "$observe_seconds" =~ ^[0-9]+$ ]] && (( observe_seconds <= 180 ))
 extra_env=()
 if [[ -n "$validation" ]]; then
  [[ -f "$validation/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json" ]]
@@ -93,3 +95,10 @@ if cmp -s "$evidence/frame-1.png" "$evidence/frame-2.png" && cmp -s "$evidence/f
  echo 'FAIL: frozen movie presentation'; exit 1
 fi
 echo 'PASS: changing presentation during movie; inspect captured frames to confirm movie content'
+for ((elapsed=0;elapsed<observe_seconds;elapsed+=10)); do
+ sleep 10
+ if ! systemctl is-active --quiet skate3-movie-probe.service; then echo 'FAIL: game exited after movie'; exit 1; fi
+ runuser -u korri -- env XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-1 "$grim" /tmp/movie-probe-after.png
+ cp /tmp/movie-probe-after.png "$evidence/after-$((elapsed+10)).png"
+done
+if journalctl -k --since "$started" --no-pager | grep -qiE 'gpu fault|hangcheck'; then echo 'FAIL: GPU fault after movie'; exit 1; fi

@@ -141,9 +141,8 @@ ARM Linux, for example a Snapdragon handheld. Build it on an ARM64 machine.
 The steps are the same as above. On a 4-core Neoverse-N1 the build takes
 about 40 minutes.
 
-The rexglue fork already supports ARM64. It predates four fixes, which the
-ARM64 build adds. The x86_64 build does not apply them, so it stays
-unchanged.
+The rexglue fork already supports ARM64. The ARM64 build adds the fixes
+below. They do not change the x86_64 derivations.
 
 | Patch | Source | Fixes |
 |---|---|---|
@@ -151,15 +150,24 @@ unchanged.
 | `rexglue-xex-delta-memmove.patch` | rexglue-sdk `85aa46b` | An overlapping `memcpy` corrupts the title update on aarch64. |
 | `rexglue-suspended-thread-race.patch` | rexglue-sdk `96bee61` | A thread created suspended can wait forever. |
 | `rexglue-vulkan-null-pipeline-guard.patch` | Buku313/rexglue-skate3-android `e99203e` | A draw with no pipeline variant binds a null pipeline. |
+| `rexglue-vulkan-packed-tables.patch` | Descriptor-packing subset of Buku313 SDK `19050db` | The scene requested seven descriptor sets on Turnip, which supports four. Pack image tables into set 1 and remap the native shaders to match. |
+| `skate3-movie-fallback.patch` | Movie-only changes from Buku313 `5ae21ad` and `d047216` | Keep fallback active across slow decoder callbacks and stale quad timestamps. Preserve the Linux timeout default of zero. |
 
 The recompiled C++ does not depend on the build machine. The code
 generated on ARM64 is byte-identical to the code generated on x86_64.
 
-The ARM64 build is not yet tested on a device. The Android ports below run
-the same code on Snapdragon 8 Gen 2 (Adreno 740), but with Qualcomm's
-Android driver. On Linux the GPU driver is Mesa turnip, which is untested
-with this renderer. A handheld also needs lower settings than a desktop:
-start with `resolution_scale = 1` and MSAA off.
+Native intro movies were tested on a Retroid Pocket Mini V2 with Turnip
+Adreno 650. The signed sandboxed build passed a 227-second movie run with
+no new GPU fault. The AYN Odin 2 Portal remains untested.
+
+Keep `skate3_native_render_scene_fmv_native = true`. Forced emulated movie
+fallback still shows incomplete image strips on this Mini, even with the
+timing fix and GTK repaint fix. Do not disable native movies as a workaround.
+See [movie verification](docs/arm64-movies.md) and the
+[regression checks](tests/README.md) for evidence and limits.
+
+A handheld needs lower settings than a desktop. Start with
+`resolution_scale = 1` and MSAA off.
 
 ### Match display: wider and taller screens
 
