@@ -111,6 +111,37 @@ Differences from the upstream release build:
 | `patches/rexglue-codegen-quick-exit.patch` | The codegen tool crashes in static destructors after it finishes, which fails the build step. The patch exits without running them. |
 | Each submodule pinned in `sources.json` | Needed because of the broken imgui pin. |
 | Version string `2.0.2-nix` | The store copy has no `.git`. |
+| `patches/skate3-display-aspect.patch`, `patches/rexglue-display-aspect.patch` | Taller-than-16:9 displays. See below. |
+
+### Taller screens (4:3, foldables)
+
+Upstream's ultrawide mode only makes the picture wider. The source build
+also makes it taller: on a screen narrower than 16:9 the game shows more
+above and below (Vert+) and keeps the horizontal view, so the 3D scene fills
+the screen. The HUD, menus and movies stay 16:9, centred, with bars above
+and below.
+
+On Linux the game cannot read the fullscreen monitor size, so set the
+aspect yourself in `~/.local/share/skate3/settings.toml`. For a 2448x1848
+screen:
+
+```toml
+skate3_ultrawide = true
+skate3_ultrawide_target_aspect = 1.3246753
+```
+
+The setting accepts 1.0 to 8.0 and needs a restart. In the settings menu the
+option is called Aspect Ratio, Match Display. It needs the native renderer,
+which is the default.
+
+The guest output keeps its width and grows in height, so a taller screen
+costs more GPU time. At render scale 3 a 4:3 frame is 3840x2900. Render
+scale 2 (2560x1932) is close to the size of a 2448x1848 screen.
+
+Known limits: the edge snap for 2D art works only at the screen edge, so
+art that reaches the edge of the 16:9 band can show a sub-pixel seam there.
+Shadows and world streaming were tested only briefly, on one free-play
+start position.
 
 ## Upstream known issues on Linux
 

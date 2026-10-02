@@ -1,0 +1,508 @@
+Taller-than-16:9 display support (Vert+) for the game side of the native
+renderer, next to upstream's ultrawide (Hor+) mode. skate3_ultrawide now
+means "match the display aspect": 1.0 to 8.0, below 16:9 included.
+
+- skate3_app_common.cpp: drop the 16:9 floor on the target aspect.
+- skate3_native_scene.cpp: scale clip.y of the published camera (Vert+).
+- skate3_native_scene_gpu.cpp: letterbox the 16:9 2D stream (HUD, menus,
+  FMV) and crop the photo grab to the same band.
+- skate3_ultrawide_guest.h: widen the game's top/bottom cull planes
+  (+5184/+5200) as well, under one shared lock. The old per-thread cache
+  let concurrent cull workers re-widen planes already widened.
+
+diff --git a/src/skate3_app_common.cpp b/src/skate3_app_common.cpp
+index a9126bf..156125b 100644
+--- a/src/skate3_app_common.cpp
++++ b/src/skate3_app_common.cpp
+@@ -13,6 +13,7 @@
+ 
+ #include <algorithm>
+ #include <chrono>
++#include <cmath>
+ #include <cstring>
+ #include <cstdint>
+ #include <cstdlib>
+@@ -93,9 +94,10 @@ REXCVAR_DEFINE_STRING(skate3_dlc_root, "", "Skate 3",
+ REXCVAR_DEFINE_BOOL(skate3_auto_install_dlc, true, "Skate 3",
+                     "Install DLC package files found in configured DLC folders");
+ REXCVAR_DEFINE_BOOL(skate3_ultrawide, false, "Skate 3",
+-                    "Ultrawide display support: the native renderer draws true widescreen "
+-                    "frames at the host display aspect (requires the native renderer; the "
+-                    "emulated fallback presents 16:9 pillarboxed)")
++                    "Match the display aspect: the native renderer draws the world at the "
++                    "host display aspect, wider (Hor+) or taller (Vert+) than 16:9 "
++                    "(requires the native renderer; the emulated fallback presents 16:9 "
++                    "boxed)")
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ REXCVAR_DEFINE_DOUBLE(skate3_field_of_view, 60.0, "Skate 3",
+                       "Gameplay camera field of view in degrees")
+@@ -103,7 +105,8 @@ REXCVAR_DEFINE_DOUBLE(skate3_field_of_view, 60.0, "Skate 3",
+ REXCVAR_DEFINE_BOOL(skate3_ultrawide_widen_game_frustum, true, "Skate 3",
+                     "Widen the game-side main-world cull frustum to match the ultrawide view");
+ REXCVAR_DEFINE_DOUBLE(skate3_ultrawide_target_aspect, 0.0, "Skate 3",
+-                      "Ultrawide display aspect (0 = derive from the host display at boot)")
++                      "Display aspect for skate3_ultrawide, 1.0 to 8.0 (0 = derive from the "
++                      "host display at boot; Linux fullscreen cannot derive it, set it here)")
+     .range(0.0, 8.0);
+ 
+ namespace {
+@@ -189,6 +192,15 @@ constexpr std::string_view kDlcDirectoryName = "dlc";
+ constexpr std::string_view kSavesDirectoryName = "saves";
+ constexpr double kSixteenNineAspect = 16.0 / 9.0;
+ constexpr double kUltrawideAspectEpsilon = 0.01;
++// Narrowest supported display aspect (square). Taller shapes would shrink
++// the letterboxed 16:9 HUD band below usefulness.
++constexpr double kMinTargetAspect = 1.0;
++constexpr double kMaxTargetAspect = 8.0;
++
++// A usable aspect that differs from 16:9: wider (ultrawide) or taller.
++bool IsReshapedAspect(double aspect) {
++  return aspect > 0.0 && std::abs(aspect - kSixteenNineAspect) > kUltrawideAspectEpsilon;
++}
+ 
+ struct DisplaySize {
+   int32_t width = 0;
+@@ -272,25 +284,26 @@ void ApplyUltrawideVideoDefaults() {
+   double target_aspect = rex::cvar::HasNonDefaultValue("skate3_ultrawide_target_aspect")
+                              ? REXCVAR_GET(skate3_ultrawide_target_aspect)
+                              : 0.0;
+-  if (target_aspect <= kSixteenNineAspect + kUltrawideAspectEpsilon) {
++  if (!IsReshapedAspect(target_aspect)) {
+     const std::optional<DisplaySize> target_size = ResolveUltrawideTargetDisplaySize();
+     if (!target_size || target_size->width <= 0 || target_size->height <= 0) {
+       return;
+     }
+     target_aspect =
+         static_cast<double>(target_size->width) / static_cast<double>(target_size->height);
+-    if (target_aspect <= kSixteenNineAspect + kUltrawideAspectEpsilon) {
++    if (!IsReshapedAspect(target_aspect)) {
+       return;
+     }
+-    rex::cvar::SetFlagByName("skate3_ultrawide_target_aspect", std::to_string(target_aspect));
+   }
++  target_aspect = std::clamp(target_aspect, kMinTargetAspect, kMaxTargetAspect);
++  rex::cvar::SetFlagByName("skate3_ultrawide_target_aspect", std::to_string(target_aspect));
+ 
+-  // The native renderer draws true wide frames at this aspect (wide guest
+-  // output + Hor+ projection + centered 2D band). Emulated fallback frames
+-  // keep the 16:9 guest output and present pillarboxed via the letterbox
+-  // default below.
+-  rex::graphics::SetNativeGuestOutputWideAspect(
+-      std::clamp(target_aspect, kSixteenNineAspect, 8.0));
++  // The native renderer draws true frames at this aspect: a wider one gets
++  // a wide guest output + Hor+ projection + pillarboxed 2D band; a taller
++  // one gets a tall guest output + Vert+ projection + letterboxed 2D band.
++  // Emulated fallback frames keep the 16:9 guest output and present
++  // boxed via the letterbox default below.
++  rex::graphics::SetNativeGuestOutputWideAspect(target_aspect);
+ 
+   if (!rex::cvar::HasNonDefaultValue("present_letterbox")) {
+     rex::cvar::SetFlagByName("present_letterbox", "true");
+diff --git a/src/skate3_native_scene.cpp b/src/skate3_native_scene.cpp
+index 5a7672b..1d21e9d 100644
+--- a/src/skate3_native_scene.cpp
++++ b/src/skate3_native_scene.cpp
+@@ -8255,40 +8255,57 @@ static void ApplySunOverride(FrameScene& scene) {
+   }
+ }
+ 
+-// Hor+ ultrawide: clip-space X scale that widens the game's screen-shaped
+-// projection to the wide guest-output aspect (see the SDK's
+-// ApplyNativeGuestOutputWideAspect). 1.0 while the output is not wide. The
+-// projection aspect is read off the matrix itself (|m11/m00|) so the FOV
+-// override and freecam zoom compose naturally.
+-float WideOutputHorScale(const float proj[16]) {
+-  const double wide_aspect = rex::graphics::GetNativeGuestOutputWideAspect();
+-  if (wide_aspect <= 0.0 || !rex::graphics::IsNativeGuestOutputActive()) {
+-    return 1.0f;
++// Clip-space scales that reshape the game's screen-shaped projection to the
++// guest-output aspect (see the SDK's ApplyNativeGuestOutputWideAspect).
++// Hor+ (wider output): x < 1, the vertical view is kept. Vert+ (taller
++// output): y < 1, the horizontal view is kept. Both 1.0 while the output
++// keeps the game's aspect. The projection aspect is read off the matrix
++// itself (|m11/m00|) so the FOV override and freecam zoom compose naturally.
++struct OutputClipScale {
++  float x = 1.0f;
++  float y = 1.0f;
++  // The smaller axis scale: frustum guards that test both axes with one
++  // margin divide by it, which covers the reshaped axis (and over-includes
++  // a little on the other, which is safe).
++  float Min() const { return std::min(x, y); }
++};
++
++OutputClipScale WideOutputClipScale(const float proj[16]) {
++  const double out_aspect = rex::graphics::GetNativeGuestOutputWideAspect();
++  if (out_aspect <= 0.0 || !rex::graphics::IsNativeGuestOutputActive()) {
++    return {};
+   }
+   const float m00 = std::fabs(proj[0]);
+   const float m11 = std::fabs(proj[5]);
+   if (!(m00 > 1e-6f) || !(m11 > 1e-6f)) {
+-    return 1.0f;
++    return {};
+   }
+   const double base_aspect = double(m11) / double(m00);
+-  if (wide_aspect <= base_aspect + 0.01) {
+-    return 1.0f;
++  if (out_aspect > base_aspect + 0.01) {
++    return {float(base_aspect / out_aspect), 1.0f};
+   }
+-  return float(base_aspect / wide_aspect);
++  if (out_aspect < base_aspect - 0.01) {
++    return {1.0f, float(out_aspect / base_aspect)};
++  }
++  return {};
+ }
+ 
+-// Applies the Hor+ scale to the published camera: column 0 of the row-vector
+-// projection and view*proj (clip.x = dot(v, column 0)). Every consumer (draw
+-// MVPs, post-pass unprojection, splines, frustum tests) reads these published
+-// matrices, so the frame stays self-consistent, exactly as if the game camera
+-// itself had the wide aspect.
+-void WidenPublishedCamera(FrameScene& scene, float scale) {
+-  if (scale == 1.0f) {
+-    return;
+-  }
++// Applies the clip scale to the published camera: column 0 (clip.x) and
++// column 1 (clip.y) of the row-vector projection and view*proj (clip.x =
++// dot(v, column 0)). Every consumer (draw MVPs, post-pass unprojection,
++// splines, frustum tests) reads these published matrices, so the frame stays
++// self-consistent, exactly as if the game camera itself had the output's
++// aspect.
++void WidenPublishedCamera(FrameScene& scene, OutputClipScale scale) {
+   for (int r = 0; r < 4; ++r) {
+-    scene.proj[r * 4 + 0] *= scale;
+-    scene.view_proj[r * 4 + 0] *= scale;
++    if (scale.x != 1.0f) {
++      scene.proj[r * 4 + 0] *= scale.x;
++      scene.view_proj[r * 4 + 0] *= scale.x;
++    }
++    if (scale.y != 1.0f) {
++      scene.proj[r * 4 + 1] *= scale.y;
++      scene.view_proj[r * 4 + 1] *= scale.y;
++    }
+   }
+ }
+ 
+@@ -9778,11 +9795,12 @@ void BuildFrameScene(uint8_t* base, const SubmitRecord* records, size_t count) {
+     }
+   }
+ 
+-  // Hor+ ultrawide scale for this frame's camera (1.0 when the output is not
+-  // wide). The matrices are widened after the camera overrides below; the
+-  // retention frustum guards divide by it here so their tests already match
+-  // the frame's real (wider) view.
+-  const float wide_hor_scale = WideOutputHorScale(scene.proj);
++  // Hor+/Vert+ clip scale for this frame's camera (1.0 when the output keeps
++  // the game's aspect). The matrices are reshaped after the camera overrides
++  // below; the retention frustum guards divide by it here so their tests
++  // already match the frame's real (wider or taller) view.
++  const OutputClipScale wide_clip_scale = WideOutputClipScale(scene.proj);
++  const float wide_guard_scale = wide_clip_scale.Min();
+ 
+   // Off-screen retention (see g_retained_items): re-append statics the game
+   // view-culled this frame while the trailing rendered pose can still see
+@@ -9843,14 +9861,14 @@ void BuildFrameScene(uint8_t* base, const SubmitRecord* records, size_t count) {
+       // it. The 0.97 margin shrinks the tested frustum so bounds poking
+       // just inside an edge still count as view-culled.
+       if (now - r.last_seen > kRetainTtlFrames ||
+-          !ItemOutsideFrustum(r.item, guest_vp, 0.97f / wide_hor_scale)) {
++          !ItemOutsideFrustum(r.item, guest_vp, 0.97f / wide_guard_scale)) {
+         rit = g_retained_items.erase(rit);
+         continue;
+       }
+       // Draw it only if the RENDERED pose can actually see it (widened
+       // frustum: only clearly-outside skips); after a fast 180 the trail
+       // behind the camera stays retained but costs nothing.
+-      if (!ItemOutsideFrustum(r.item, scene.view_proj, 1.05f / wide_hor_scale)) {
++      if (!ItemOutsideFrustum(r.item, scene.view_proj, 1.05f / wide_guard_scale)) {
+         scene.items.push_back(r.item);
+         ++retain_appended;
+       }
+@@ -10053,7 +10071,7 @@ void BuildFrameScene(uint8_t* base, const SubmitRecord* records, size_t count) {
+   // Hor+ ultrawide: widen the published camera to the wide output aspect.
+   // Applied after every camera override (smoothing, synthetic pan, freecam)
+   // so it survives their view_proj/proj rewrites.
+-  WidenPublishedCamera(scene, wide_hor_scale);
++  WidenPublishedCamera(scene, wide_clip_scale);
+ 
+   // Publish the frame's captured fog rows and re-arm the OnDrawDone capture
+   // (keyed to this frame's camera) for the next frame.
+diff --git a/src/skate3_native_scene_gpu.cpp b/src/skate3_native_scene_gpu.cpp
+index f2009df..91f4043 100644
+--- a/src/skate3_native_scene_gpu.cpp
++++ b/src/skate3_native_scene_gpu.cpp
+@@ -10979,6 +10979,12 @@ bool RenderScene(const NativeGuestOutputRenderContext& context, void* /*user_dat
+       float(context.guest_output_width) / float(context.guest_output_height);
+   const float wide_2d_scale =
+       out_aspect2d > (16.0f / 9.0f) * 1.01f ? (16.0f / 9.0f) / out_aspect2d : 1.0f;
++  // Vert+ (taller output): the same idea on Y. Clip-space Y is scaled so the
++  // 16:9 stream lands in a letterboxed band, and the photo grab crops it.
++  // The VS edge snap stays at +-1 on Y (no shader change), so band-edge
++  // art is not snapped; at worst a sub-pixel fringe at the band edge.
++  const float tall_2d_scale =
++      out_aspect2d < (16.0f / 9.0f) / 1.01f ? out_aspect2d / (16.0f / 9.0f) : 1.0f;
+ 
+   cmd->ProfileRegion(nrhi::ProfileStage::k2d);
+ 
+@@ -11093,15 +11099,15 @@ bool RenderScene(const NativeGuestOutputRenderContext& context, void* /*user_dat
+         cmd->SetPrimitiveTopology(nrhi::PrimitiveTopology::kTriangleList);
+         cmd->SetPipeline(g_r.pso_blur_down);
+         // Source UV rect (second register): the centered 16:9 band on a
+-        // wide output; the guest screenshot raster is 16:9.
++        // wide or tall output; the guest screenshot raster is 16:9.
+         const float grab_consts[8] = {1.0f / float(context.guest_output_width),
+                                       1.0f / float(context.guest_output_height),
+                                       0.0f,
+                                       0.0f,
+                                       wide_2d_scale,
+-                                      1.0f,
++                                      tall_2d_scale,
+                                       (1.0f - wide_2d_scale) * 0.5f,
+-                                      0.0f};
++                                      (1.0f - tall_2d_scale) * 0.5f};
+         cmd->SetRootConstants(0, 8, grab_consts, 0);
+         cmd->SetTexture(1, g_r.output_srv_slot);
+         cmd->Draw(3, 0);
+@@ -11303,6 +11309,13 @@ bool RenderScene(const NativeGuestOutputRenderContext& context, void* /*user_dat
+           constants[2] *= wide_2d_scale;
+           constants[3] *= wide_2d_scale;
+         }
++        // Tall output: the clip.y row (c1), same centering on Y.
++        if (tall_2d_scale != 1.0f) {
++          constants[4] *= tall_2d_scale;
++          constants[5] *= tall_2d_scale;
++          constants[6] *= tall_2d_scale;
++          constants[7] *= tall_2d_scale;
++        }
+         // 2D ortho draws have no translation row in the projection (c3 ==
+         // (0,0,0,1)); perspective view-proj rows do. Half-pixel applies to
+         // the former only.
+diff --git a/src/skate3_ultrawide_guest.h b/src/skate3_ultrawide_guest.h
+index 859ff50..854ff05 100644
+--- a/src/skate3_ultrawide_guest.h
++++ b/src/skate3_ultrawide_guest.h
+@@ -5,17 +5,23 @@
+ #include <cmath>
+ #include <cstddef>
+ #include <cstdint>
++#include <mutex>
+ 
+ #include <rex/cvar.h>
+ #include <rex/graphics/native_guest_renderer.h>
+ 
+-// Guest-side ultrawide support: the native renderer draws true widescreen
+-// frames (wide guest output + Hor+ projection), but the game's own CPU
+-// culling still tests against its 16:9 view frustum and would drop side
+-// content before it ever reaches the renderer. The frustum patch scope below
+-// is injected into the recompiled cull routine (see
+-// cmake/ApplySkate3CodegenPatches.cmake) and widens the cull planes in guest
+-// memory to match the wide view.
++// Guest-side display-aspect support: the native renderer draws true frames
++// at the display aspect (wide or tall guest output + Hor+/Vert+ projection),
++// but the game's own CPU culling still tests against its 16:9 view frustum
++// and would drop content at the new screen edges before it ever reaches the
++// renderer. The frustum patch scope below is injected into the recompiled
++// cull routine (see cmake/ApplySkate3CodegenPatches.cmake) and widens the
++// cull planes in guest memory to match the reshaped view: left/right for a
++// wider display, top/bottom for a taller one.
++
++inline double Skate3UltrawideTargetAspect() {
++  return std::clamp(rex::cvar::Query<double>("skate3_ultrawide_target_aspect"), 1.0, 8.0);
++}
+ 
+ inline bool Skate3UltrawideHasExpandedTargetAspect() {
+   if (!rex::cvar::Query<bool>("skate3_ultrawide") ||
+@@ -23,17 +29,17 @@ inline bool Skate3UltrawideHasExpandedTargetAspect() {
+     return false;
+   }
+ 
+-  return rex::cvar::Query<double>("skate3_ultrawide_target_aspect") >
+-         (16.0 / 9.0) + 0.01;
++  const double aspect = rex::cvar::Query<double>("skate3_ultrawide_target_aspect");
++  return aspect > 0.0 && std::abs(aspect - (16.0 / 9.0)) > 0.01;
+ }
+ 
+ inline bool Skate3UltrawideShouldWidenGameCullFrustum(u8* base, uint32_t cull_block) {
+-  // Every cull block reaching the vectorized cull job gets its left/right
+-  // planes widened: DoFrustumCulling reads them unconditionally, including
+-  // blocks with no extra cull volumes (the word at +5260); gating on that
+-  // count left 16:9 culling holes at the frame edges in the areas whose
+-  // blocks carry none. Over-inclusion is safe (a few extra submitted
+-  // meshes); the plane sanity checks below still veto implausible data.
++  // Every cull block reaching the vectorized cull job gets its side planes
++  // widened: DoFrustumCulling reads them unconditionally, including blocks
++  // with no extra cull volumes (the word at +5260); gating on that count
++  // left 16:9 culling holes at the frame edges in the areas whose blocks
++  // carry none. Over-inclusion is safe (a few extra submitted meshes); the
++  // plane sanity checks below still veto implausible data.
+   (void)base;
+   return cull_block != 0 && Skate3UltrawideHasExpandedTargetAspect() &&
+          rex::cvar::Query<bool>("skate3_ultrawide_widen_game_frustum");
+@@ -46,48 +52,21 @@ struct Skate3UltrawideGameFrustumPatchScope {
+       return;
+     }
+ 
+-    const double target_aspect = std::clamp(
+-        rex::cvar::Query<double>("skate3_ultrawide_target_aspect"), 16.0 / 9.0, 8.0);
+-    side_scale = float((16.0 / 9.0) / target_aspect);
+-    if (!(side_scale > 0.0f && side_scale < 0.999f)) {
+-      return;
+-    }
++    const double target_aspect = Skate3UltrawideTargetAspect();
++    // Each pair's side component is scaled by s < 1, which multiplies the
++    // tangent of that axis' half-angle by 1/s.
++    const float side_scale = float(std::min(1.0, (16.0 / 9.0) / target_aspect));
++    const float vert_scale = float(std::min(1.0, target_aspect / (16.0 / 9.0)));
+ 
+     block = cull_block;
+-    PlaneBits current_left_bits = LoadPlaneBits(kLeftPlaneOffset);
+-    PlaneBits current_right_bits = LoadPlaneBits(kRightPlaneOffset);
+-
+-    WidenedPlaneCache& cache = CacheForBlock();
+-    if (cache.valid && cache.side_scale == side_scale &&
+-        current_left_bits == cache.widened[0] && current_right_bits == cache.widened[1]) {
+-      return;
+-    }
+-
+-    cache.original[0] = current_left_bits;
+-    cache.original[1] = current_right_bits;
+-
+-    Plane left = LoadPlane(kLeftPlaneOffset);
+-    Plane right = LoadPlane(kRightPlaneOffset);
+-    Plane widened_left{};
+-    Plane widened_right{};
+-    for (size_t i = 0; i < left.size(); ++i) {
+-      const float center = (left[i] + right[i]) * 0.5f;
+-      const float side = (left[i] - right[i]) * 0.5f * side_scale;
+-      widened_left[i] = center + side;
+-      widened_right[i] = center - side;
+-    }
+-
+-    if (!NormalizePlane(widened_left) || !NormalizePlane(widened_right)) {
+-      return;
+-    }
+-
+-    StorePlane(kLeftPlaneOffset, widened_left);
+-    StorePlane(kRightPlaneOffset, widened_right);
+-    cache.widened[0] = LoadPlaneBits(kLeftPlaneOffset);
+-    cache.widened[1] = LoadPlaneBits(kRightPlaneOffset);
+-    cache.side_scale = side_scale;
+-    cache.valid = true;
+-    active = true;
++    // Several cull worker threads run the same block concurrently. One
++    // shared cache under one lock makes sure a plane set the game wrote is
++    // widened exactly once; per-thread caches each re-widened planes
++    // another thread had already widened, compounding the scale until the
++    // pair collapsed onto the near plane (no culling on that axis at all).
++    std::lock_guard<std::mutex> lock(CacheMutex());
++    WidenPair(kLeftPlaneOffset, kRightPlaneOffset, side_scale);
++    WidenPair(kTopPlaneOffset, kBottomPlaneOffset, vert_scale);
+   }
+ 
+   ~Skate3UltrawideGameFrustumPatchScope() = default;
+@@ -102,14 +81,67 @@ struct Skate3UltrawideGameFrustumPatchScope {
+ 
+   struct WidenedPlaneCache {
+     uint32_t block = 0;
++    uint32_t first_offset = 0;
+     std::array<PlaneBits, 2> original{};
+     std::array<PlaneBits, 2> widened{};
+-    float side_scale = 1.0f;
++    float scale = 1.0f;
+     bool valid = false;
+   };
+ 
++  // Six cull planes, 16 bytes each, from +5152 (see the cull routine's
++  // plane loads): left, right, top, bottom, near, far. Identified from a
++  // live 16:9 block: 5152/5168 normals 80 deg apart (100 deg horizontal
++  // FOV), 5184/5200 113 deg apart (67 deg vertical FOV; tan ratio 1.78),
++  // 5216/5232 opposite (near, and far with the large distance).
+   static constexpr uint32_t kLeftPlaneOffset = 5152;
+   static constexpr uint32_t kRightPlaneOffset = 5168;
++  static constexpr uint32_t kTopPlaneOffset = 5184;
++  static constexpr uint32_t kBottomPlaneOffset = 5200;
++
++  static std::mutex& CacheMutex() {
++    static std::mutex mutex;
++    return mutex;
++  }
++
++  void WidenPair(uint32_t offset_a, uint32_t offset_b, float scale) {
++    if (!(scale > 0.0f && scale < 0.999f)) {
++      return;
++    }
++
++    const PlaneBits current_a = LoadPlaneBits(offset_a);
++    const PlaneBits current_b = LoadPlaneBits(offset_b);
++
++    WidenedPlaneCache& cache = CacheFor(offset_a);
++    if (cache.valid && cache.scale == scale && current_a == cache.widened[0] &&
++        current_b == cache.widened[1]) {
++      return;
++    }
++
++    cache.original[0] = current_a;
++    cache.original[1] = current_b;
++
++    const Plane a = LoadPlane(offset_a);
++    const Plane b = LoadPlane(offset_b);
++    Plane widened_a{};
++    Plane widened_b{};
++    for (size_t i = 0; i < a.size(); ++i) {
++      const float center = (a[i] + b[i]) * 0.5f;
++      const float side = (a[i] - b[i]) * 0.5f * scale;
++      widened_a[i] = center + side;
++      widened_b[i] = center - side;
++    }
++
++    if (!NormalizePlane(widened_a) || !NormalizePlane(widened_b)) {
++      return;
++    }
++
++    StorePlane(offset_a, widened_a);
++    StorePlane(offset_b, widened_b);
++    cache.widened[0] = LoadPlaneBits(offset_a);
++    cache.widened[1] = LoadPlaneBits(offset_b);
++    cache.scale = scale;
++    cache.valid = true;
++  }
+ 
+   float LoadFloat(uint32_t address) const {
+     PPCRegister value{};
+@@ -145,11 +177,12 @@ struct Skate3UltrawideGameFrustumPatchScope {
+     return plane;
+   }
+ 
+-  WidenedPlaneCache& CacheForBlock() {
+-    static thread_local std::array<WidenedPlaneCache, 16> cache_entries{};
++  WidenedPlaneCache& CacheFor(uint32_t first_offset) {
++    // Guarded by CacheMutex().
++    static std::array<WidenedPlaneCache, 32> cache_entries{};
+     WidenedPlaneCache* empty = nullptr;
+     for (WidenedPlaneCache& entry : cache_entries) {
+-      if (entry.valid && entry.block == block) {
++      if (entry.valid && entry.block == block && entry.first_offset == first_offset) {
+         return entry;
+       }
+       if (!entry.valid && !empty) {
+@@ -157,9 +190,11 @@ struct Skate3UltrawideGameFrustumPatchScope {
+       }
+     }
+ 
+-    WidenedPlaneCache& entry = empty ? *empty : cache_entries[block % cache_entries.size()];
++    WidenedPlaneCache& entry =
++        empty ? *empty : cache_entries[(block + first_offset) % cache_entries.size()];
+     entry = {};
+     entry.block = block;
++    entry.first_offset = first_offset;
+     return entry;
+   }
+ 
+@@ -183,6 +218,4 @@ struct Skate3UltrawideGameFrustumPatchScope {
+   uint32_t block = 0;
+   PPCContext& ctx;
+   u8* base = nullptr;
+-  float side_scale = 1.0f;
+-  bool active = false;
+ };

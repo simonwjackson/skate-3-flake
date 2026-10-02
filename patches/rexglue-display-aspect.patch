@@ -1,0 +1,146 @@
+SDK side of taller-than-16:9 display support: the native guest output
+grows in height (width kept) when the target aspect is taller than the
+frontbuffer, the guest keeps its 16:9 video mode for any non-16:9 target,
+and the settings menu calls the option "Match Display".
+
+diff --git a/include/rex/graphics/native_guest_renderer.h b/include/rex/graphics/native_guest_renderer.h
+index a2ce48c..ac81fe3 100644
+--- a/include/rex/graphics/native_guest_renderer.h
++++ b/include/rex/graphics/native_guest_renderer.h
+@@ -51,22 +51,24 @@ bool HasNativeGuestOutputRenderer();
+ bool IsNativeGuestOutputActive();
+ 
+ // ---- Wide guest output ----------------------------------------------------
+-// Display aspect the native renderer wants to draw at when it is wider than
+-// the guest frontbuffer's own aspect (ultrawide). 0 = disabled. Set once at
++// Display aspect the native renderer wants to draw at when it differs from
++// the guest frontbuffer's own aspect: wider (ultrawide) or taller (for
++// example 4:3 or a foldable's inner screen). 0 = disabled. Set once at
+ // app startup; consumed by the command processors when sizing the guest
+ // output for a swap.
+ void SetNativeGuestOutputWideAspect(double aspect);
+ double GetNativeGuestOutputWideAspect();
+-// Applies the wide aspect to this swap's guest output and display
+-// dimensions: widens guest_output_width to guest_output_height * aspect and
+-// makes the display aspect match. Only widens while a renderer is registered
++// Applies the aspect to this swap's guest output and display dimensions:
++// a wider aspect widens guest_output_width to guest_output_height * aspect;
++// a taller one grows guest_output_height to guest_output_width / aspect.
++// Either way the display aspect is made to match. Only widens while a renderer is registered
+ // AND it served the last presented frame, so emulated fallback frames size
+ // back to the frontbuffer aspect and present pillarboxed by the presenter's
+ // letterbox path. Returns whether the output was widened; when it was and
+ // the renderer then yields the frame, the refresh callback must return false
+ // (keeping the previously presented image) instead of running the emulated
+ // blit, which writes frontbuffer-aspect content.
+-bool ApplyNativeGuestOutputWideAspect(uint32_t& guest_output_width, uint32_t guest_output_height,
++bool ApplyNativeGuestOutputWideAspect(uint32_t& guest_output_width, uint32_t& guest_output_height,
+                                       uint32_t& display_width, uint32_t& display_height);
+ // native_render_suppress_emulated_draws && IsNativeGuestOutputActive():
+ // command processors skip emulated draw/resolve execution (memexport draws,
+diff --git a/src/graphics/native_guest_renderer.cpp b/src/graphics/native_guest_renderer.cpp
+index dd39116..64dca93 100644
+--- a/src/graphics/native_guest_renderer.cpp
++++ b/src/graphics/native_guest_renderer.cpp
+@@ -127,7 +127,7 @@ double GetNativeGuestOutputWideAspect() {
+   return g_wide_aspect.load(std::memory_order_relaxed);
+ }
+ 
+-bool ApplyNativeGuestOutputWideAspect(uint32_t& guest_output_width, uint32_t guest_output_height,
++bool ApplyNativeGuestOutputWideAspect(uint32_t& guest_output_width, uint32_t& guest_output_height,
+                                       uint32_t& display_width, uint32_t& display_height) {
+   const double aspect = g_wide_aspect.load(std::memory_order_relaxed);
+   if (aspect <= 0.0 || !guest_output_width || !guest_output_height ||
+@@ -135,14 +135,27 @@ bool ApplyNativeGuestOutputWideAspect(uint32_t& guest_output_width, uint32_t gue
+       !g_native_output_active.load(std::memory_order_relaxed)) {
+     return false;
+   }
+-  // Even width keeps every half-resolution derived target (bloom, SSAO,
++  // Even sizes keep every half-resolution derived target (bloom, SSAO,
+   // menu snapshots) an exact divide.
+-  uint32_t wide_width =
+-      uint32_t(std::clamp(aspect * double(guest_output_height) + 0.5, 1.0, 16384.0)) & ~1u;
+-  if (wide_width <= guest_output_width) {
+-    return false;
++  const double frontbuffer_aspect = double(guest_output_width) / double(guest_output_height);
++  if (aspect > frontbuffer_aspect) {
++    // Wider than the frontbuffer: keep the height, widen.
++    uint32_t wide_width =
++        uint32_t(std::clamp(aspect * double(guest_output_height) + 0.5, 1.0, 16384.0)) & ~1u;
++    if (wide_width <= guest_output_width) {
++      return false;
++    }
++    guest_output_width = wide_width;
++  } else {
++    // Taller than the frontbuffer: keep the width, so horizontal detail
++    // stays at the chosen resolution scale, and grow the height.
++    uint32_t tall_height =
++        uint32_t(std::clamp(double(guest_output_width) / aspect + 0.5, 1.0, 16384.0)) & ~1u;
++    if (tall_height <= guest_output_height) {
++      return false;
++    }
++    guest_output_height = tall_height;
+   }
+-  guest_output_width = wide_width;
+   // The display aspect is the actual pixel aspect: the presenter maps the
+   // wide image edge-to-edge on a matching window.
+   display_width = guest_output_width;
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_video.cpp b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
+index 73f5c99..28e2098 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_video.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
+@@ -13,6 +13,7 @@
+ #pragma GCC diagnostic ignored "-Wunused-parameter"
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <string>
+ 
+ #include <rex/cvar.h>
+@@ -40,13 +41,13 @@ constexpr uint32_t kDisplayGammaType = 2;
+ constexpr double kDisplayGammaPower = 2.22222233;
+ constexpr double kSkate3BaseAspect = 16.0 / 9.0;
+ 
+-// Ultrawide keeps the guest on a standard 16:9 video mode: the widening is
+-// done natively (wide guest output + Hor+ projection), never by handing the
+-// game a wide mode.
++// A non-16:9 display aspect keeps the guest on a standard 16:9 video mode:
++// the reshaping is done natively (wide or tall guest output + Hor+/Vert+
++// projection), never by handing the game a wide or tall mode.
+ bool Skate3UltrawideConfigured() {
+-  return rex::cvar::Query<bool>("skate3_ultrawide") &&
+-         rex::cvar::Query<double>("skate3_ultrawide_target_aspect") >
+-             kSkate3BaseAspect + 0.01;
++  const double aspect = rex::cvar::Query<double>("skate3_ultrawide_target_aspect");
++  return rex::cvar::Query<bool>("skate3_ultrawide") && aspect > 0.0 &&
++         std::abs(aspect - kSkate3BaseAspect) > 0.01;
+ }
+ 
+ uint32_t GetConfiguredVideoModeWidth() {
+diff --git a/src/ui/overlay/simple_settings_overlay.cpp b/src/ui/overlay/simple_settings_overlay.cpp
+index c22345f..dc830e3 100644
+--- a/src/ui/overlay/simple_settings_overlay.cpp
++++ b/src/ui/overlay/simple_settings_overlay.cpp
+@@ -38,7 +38,7 @@ namespace {
+ constexpr std::array<int32_t, 3> kResolutionScales = {1, 2, 3};
+ constexpr std::array<const char*, 3> kResolutionLabels = {"720p (1x)", "1440p (2x)",
+                                                           "2160p (3x)"};
+-constexpr std::array<const char*, 2> kAspectRatioLabels = {"16:9", "21:9 (Experimental)"};
++constexpr std::array<const char*, 2> kAspectRatioLabels = {"16:9", "Match Display (Experimental)"};
+ constexpr std::array<double, 6> kFrameCapRates = {60.0, 90.0, 120.0, 144.0, 165.0, 240.0};
+ constexpr std::array<const char*, 7> kFrameCapLabels = {"Unlimited", "60 FPS",  "90 FPS",
+                                                         "120 FPS",   "144 FPS", "165 FPS",
+@@ -1385,9 +1385,10 @@ void SimpleSettingsDialog::BuildRows(std::vector<RowSpec>& rows, int category) {
+         row.kind = RowSpec::kEnum;
+         row.label = "Aspect Ratio";
+         row.desc =
+-            "21:9 widens the world rendering for ultrawide displays. Requires "
+-            "the native renderer; the emulated renderer presents 16:9.";
+-        row.value_note = "21:9 is experimental";
++            "Match Display renders the world at the display's shape: wider for "
++            "ultrawide screens, taller for 4:3-like screens. Requires the native "
++            "renderer; the emulated renderer presents 16:9.";
++        row.value_note = "Match Display is experimental";
+         for (const char* label : kAspectRatioLabels) {
+           row.options.push_back(label);
+         }

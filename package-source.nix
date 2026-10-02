@@ -135,6 +135,10 @@ stdenv.mkDerivation {
     patch -p1 -d third_party/rexglue-sdk/thirdparty/imgui < ${./patches/imgui-rasterizer-gamma.patch}
     patch -p1 -d third_party/rexglue-sdk < ${./patches/rexglue-codegen-quick-exit.patch}
 
+    # Taller-than-16:9 displays (Vert+), next to upstream's ultrawide.
+    patch -p1 -d third_party/rexglue-sdk < ${./patches/rexglue-display-aspect.patch}
+    patch -p1 < ${./patches/skate3-display-aspect.patch}
+
     # Submodules arrive without .git; check for the directory instead.
     substituteInPlace third_party/rexglue-sdk/thirdparty/CMakeLists.txt \
       --replace-fail '"''${CMAKE_CURRENT_SOURCE_DIR}/''${submodule}/.git"' '"''${CMAKE_CURRENT_SOURCE_DIR}/''${submodule}"'
