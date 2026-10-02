@@ -115,6 +115,7 @@ Differences from the upstream release build:
 | Each submodule pinned in `sources.json` | Needed because of the broken imgui pin. |
 | Version string `2.0.2-nix` | The store copy has no `.git`. |
 | `patches/skate3-display-aspect.patch`, `patches/rexglue-display-aspect.patch` | Taller-than-16:9 displays. See below. |
+| `patches/rexglue-shm-unlink-early.patch` | Guest memory is a 4.8 GB file in `/dev/shm` that upstream deletes only on a clean shutdown, so every kill or crash leaves one behind until `/dev/shm` fills and the game no longer starts. The patch deletes the name right after creation; the kernel frees the memory when the game exits. Upstream issue: rexglue/rexglue-sdk#445. |
 
 ### ARM64
 

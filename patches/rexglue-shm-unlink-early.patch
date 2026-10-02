@@ -1,0 +1,47 @@
+Unlink the guest-memory shm object right after it is created.
+
+rexglue backs guest memory with a 4.8 GB POSIX shm object,
+/dev/shm/xenia_memory_<tick count>, and unlinks it only in
+CloseFileMappingHandle on a clean shutdown. Every kill, crash or
+systemctl stop leaves one behind. Once /dev/shm is full, the next
+start hangs or dies with SIGBUS.
+
+Nothing reopens the object by name: every view maps from the
+descriptor. So unlink it as soon as ftruncate succeeds. The descriptor
+and the mappings keep the memory alive, and the kernel frees it when
+the process exits, however it exits.
+
+Upstream report: rexglue/rexglue-sdk#445 (open, no fix yet).
+The change follows patches/rexglue-posix-shm-unlink.patch in
+Heus-Sueh/midnight-club-la-recomp a3927b8, without its unit test.
+
+--- a/src/core/memory_posix.cpp
++++ b/src/core/memory_posix.cpp
+@@ -417,16 +417,23 @@
+     shm_unlink(full_path.c_str());
+     return kFileMappingHandleInvalid;
+   }
++
++  // The mapping is private to this process and all views are created from the
++  // descriptor below, so it never needs to be reopened by name. Unlink it now
++  // while keeping the descriptor alive. This lets the kernel reclaim the
++  // object after an abort or hard exit instead of leaving multi-gigabyte sparse
++  // xenia_memory_* objects resident in /dev/shm.
++  if (shm_unlink(full_path.c_str()) != 0) {
++    close(ret);
++    return kFileMappingHandleInvalid;
++  }
+   return static_cast<FileMappingHandle>(ret);
+ #endif
+ }
+ 
+ void CloseFileMappingHandle(FileMappingHandle handle, const std::filesystem::path& path) {
++  static_cast<void>(path);
+   close(static_cast<int>(handle));
+-#if !REX_PLATFORM_ANDROID
+-  auto full_path = MakeShmName(path);
+-  shm_unlink(full_path.c_str());
+-#endif
+ }
+ 
+ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, PageAccess access,

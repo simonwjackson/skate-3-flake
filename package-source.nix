@@ -138,6 +138,9 @@ stdenv.mkDerivation {
     # Taller-than-16:9 displays (Vert+), next to upstream's ultrawide.
     patch -p1 -d third_party/rexglue-sdk < ${./patches/rexglue-display-aspect.patch}
     patch -p1 < ${./patches/skate3-display-aspect.patch}
+
+    # Free guest memory on any exit, not only a clean one (rexglue-sdk#445).
+    patch -p1 -d third_party/rexglue-sdk < ${./patches/rexglue-shm-unlink-early.patch}
   ''
   # ARM64 fixes the Skate rexglue fork predates. The first three are upstream
   # rexglue-sdk commits; the last is from Buku313's Android fork. They are
