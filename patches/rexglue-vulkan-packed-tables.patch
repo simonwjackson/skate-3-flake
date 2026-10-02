@@ -1,0 +1,422 @@
+Subject: Pack native Vulkan texture tables into one descriptor set
+
+Port only descriptor packing and SPIR-V remapping from Buku313's
+rexglue-skate3-android 19050db. Keep the existing descriptor-cache lifetime,
+pool allocation, pipeline construction, and null-pipeline guard unchanged.
+
+Turnip on the Retroid Pocket Mini V2 allows four bound descriptor sets.
+The old scene layout used seven; the first FMV V-plane sample used set 4
+and faulted the GPU at address zero. Keep buffers/samplers in set 0 and
+pack all texture tables into set 1 with the upstream stride-8 mapping.
+
+Source: https://github.com/Buku313/rexglue-skate3-android/commit/19050db
+
+diff --git a/include/rex/ui/vulkan/device.h b/include/rex/ui/vulkan/device.h
+index bf1ca34..5ae2e76 100644
+--- a/include/rex/ui/vulkan/device.h
++++ b/include/rex/ui/vulkan/device.h
+@@ -60,6 +60,7 @@ class VulkanDevice {
+     uint32_t maxImageArrayLayers = 256;
+     uint32_t maxStorageBufferRange = uint32_t(1) << 27;
+     uint32_t maxSamplerAllocationCount = 4000;
++    uint32_t maxBoundDescriptorSets = 4;
+     uint32_t maxPerStageDescriptorSamplers = 16;
+     uint32_t maxPerStageDescriptorStorageBuffers = 4;
+     uint32_t maxPerStageDescriptorSampledImages = 16;
+diff --git a/src/graphics/vulkan/native_rhi_vulkan.cpp b/src/graphics/vulkan/native_rhi_vulkan.cpp
+index 28fd5b0..a962a0d 100644
+--- a/src/graphics/vulkan/native_rhi_vulkan.cpp
++++ b/src/graphics/vulkan/native_rhi_vulkan.cpp
+@@ -11,7 +11,7 @@
+ //  - the binding model -> the frozen Vulkan set/binding plan:
+ //    set 0 = buffer params in
+ //    param order as dynamic-offset UBO/SSBO descriptors + immutable
+-//    samplers, sets 1..N = one per texture-table param;
++//    samplers, set 1 = all texture-table params at stride-8 bindings;
+ //  - 32-bit root constants -> a CPU shadow block copied per draw into a
+ //    256-aligned slice of an internal per-frame ring UBO bound with a
+ //    dynamic offset;
+@@ -34,6 +34,7 @@
+ #include <map>
+ #include <mutex>
+ #include <string>
++#include <unordered_map>
+ #include <unordered_set>
+ #include <utility>
+ #include <vector>
+@@ -300,6 +301,10 @@ class NrTextureViewVulkan : public nrhi::TextureView {
+   NrTextureVulkan* texture = nullptr;
+ };
+ 
++// Buku313/rexglue-skate3-android 19050db: the scene uses ten image slots;
++// photo effects use eight. Reject layouts exceeding the packed cache key.
++inline constexpr uint32_t kMaxPackedTableSlots = 16;
++
+ class NrBindingLayoutVulkan : public nrhi::BindingLayout {
+  public:
+   struct ParamInfo {
+@@ -308,21 +313,38 @@ class NrBindingLayoutVulkan : public nrhi::BindingLayout {
+     // params in param order, per the frozen derivation rule).
+     uint32_t set0_binding = 0;
+     VkDescriptorType descriptor_type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+-    // Table kinds: the descriptor set index (1 + index among table params in
+-    // param order) and the declared table size.
++    // Table kinds: every table lives in set 1 (see kTableSetIndex), at
++    // bindings table_index * kTableBindingStride + 0..table_size-1.
+     uint32_t set_index = 0;
+     uint32_t table_index = 0;  // index among table params
+     uint32_t table_size = 0;
++    uint32_t table_binding_base = 0;  // table_index * kTableBindingStride
++    uint32_t table_slot_base = 0;     // start of this table in the packed view list
+   };
+ 
++  // Every texture table shares ONE descriptor set. It used to be a set each,
++  // which made the scene layout (six tables) a SEVEN-set pipeline layout - and
++  // some mobile drivers support only four bound descriptor sets. Qualcomm's
++  // driver does not fail that layout, it segfaults inside
++  // vkCreatePipelineLayout, which is what killed every Adreno 6xx device three
++  // seconds into the first frame. Bindings are spaced by a fixed stride so a
++  // table's binding numbers do not move when a table before it changes size;
++  // gaps in binding numbers are legal.
++  static constexpr uint32_t kTableSetIndex = 1;
++  static constexpr uint32_t kTableBindingStride = nrhi::kMaxTextureTableSize;
++
+   VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+   VkDescriptorSetLayout set0_layout = VK_NULL_HANDLE;
+-  std::vector<VkDescriptorSetLayout> table_layouts;  // one per kTextureTable param
+-  std::vector<VkSampler> immutable_samplers;         // owned
++  VkDescriptorSetLayout tables_layout = VK_NULL_HANDLE;  // set 1, all tables
++  std::vector<VkSampler> immutable_samplers;             // owned
+   ParamInfo params[nrhi::kMaxBindingParams] = {};
+   uint32_t param_count = 0;
+   uint32_t buffer_binding_count = 0;  // dynamic-offset bindings in set 0
+   uint32_t table_count = 0;
++  uint32_t total_table_slots = 0;  // sum of table_size over all table params
++  // Packed slot index -> binding number in set 1. Saves the bind path
++  // re-deriving it from the params on every descriptor write.
++  uint32_t table_slot_bindings[kMaxPackedTableSlots] = {};
+   int32_t constants_param = -1;       // param index of the kConstants param
+   uint32_t constants_size_bytes = 0;  // count * 4 from the desc
+ };
+@@ -626,8 +648,8 @@ class NrDeviceVulkan : public nrhi::Device {
+       for (VkSampler sampler : layout->immutable_samplers) {
+         dfn.vkDestroySampler(device, sampler, nullptr);
+       }
+-      for (VkDescriptorSetLayout set_layout : layout->table_layouts) {
+-        dfn.vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
++      if (layout->tables_layout != VK_NULL_HANDLE) {
++        dfn.vkDestroyDescriptorSetLayout(device, layout->tables_layout, nullptr);
+       }
+       if (layout->set0_layout != VK_NULL_HANDLE) {
+         dfn.vkDestroyDescriptorSetLayout(device, layout->set0_layout, nullptr);
+@@ -1078,6 +1100,7 @@ class NrDeviceVulkan : public nrhi::Device {
+     const VkShaderStageFlags kAllGraphics = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+     std::vector<VkDescriptorSetLayoutBinding> set0_bindings;
+     uint32_t table_count = 0;
++    uint32_t total_table_slots = 0;
+     for (uint32_t i = 0; i < desc.param_count; ++i) {
+       const nrhi::BindingParamDesc& p = desc.params[i];
+       NrBindingLayoutVulkan::ParamInfo& info = layout->params[i];
+@@ -1103,8 +1126,12 @@ class NrDeviceVulkan : public nrhi::Device {
+         }
+         case nrhi::BindingParamKind::kTextureTable: {
+           info.table_index = table_count;
+-          info.set_index = 1 + table_count;
++          info.set_index = NrBindingLayoutVulkan::kTableSetIndex;
+           info.table_size = p.count;
++          info.table_binding_base =
++              table_count * NrBindingLayoutVulkan::kTableBindingStride;
++          info.table_slot_base = total_table_slots;
++          total_table_slots += p.count;
+           ++table_count;
+           break;
+         }
+@@ -1112,6 +1139,7 @@ class NrDeviceVulkan : public nrhi::Device {
+     }
+     layout->buffer_binding_count = uint32_t(set0_bindings.size());
+     layout->table_count = table_count;
++    layout->total_table_slots = total_table_slots;
+     for (uint32_t i = 0; i < desc.static_sampler_count; ++i) {
+       VkDescriptorSetLayoutBinding binding = {};
+       binding.binding = layout->buffer_binding_count + i;
+@@ -1131,35 +1159,62 @@ class NrDeviceVulkan : public nrhi::Device {
+       REXLOG_ERROR("nrhi-vulkan: set-0 descriptor set layout creation failed");
+     }
+ 
+-    // Sets 1..N: one per kTextureTable param, SAMPLED_IMAGE bindings
+-    // 0..count-1.
+-    for (uint32_t i = 0; i < desc.param_count; ++i) {
+-      const nrhi::BindingParamDesc& p = desc.params[i];
+-      if (p.kind != nrhi::BindingParamKind::kTextureTable) continue;
+-      std::vector<VkDescriptorSetLayoutBinding> table_bindings(p.count);
+-      for (uint32_t j = 0; j < p.count; ++j) {
+-        table_bindings[j] = {};
+-        table_bindings[j].binding = j;
+-        table_bindings[j].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+-        table_bindings[j].descriptorCount = 1;
+-        table_bindings[j].stageFlags = kAllGraphics;
++    // Set 1: every table's SAMPLED_IMAGE bindings, table k at
++    // k * kTableBindingStride + 0..count-1. CreateShader rewrites the
++    // shaders' set/binding decorations to match.
++    if (total_table_slots > kMaxPackedTableSlots) {
++      REXLOG_ERROR(
++          "nrhi-vulkan: binding layout declares {} texture-table slots across {} tables, "
++          "more than the {} the packed set holds",
++          total_table_slots, table_count, kMaxPackedTableSlots);
++      layouts_.push_back(layout);
++      return nullptr;
++    }
++    if (table_count != 0) {
++      std::vector<VkDescriptorSetLayoutBinding> table_bindings;
++      table_bindings.reserve(total_table_slots);
++      for (uint32_t i = 0; i < desc.param_count; ++i) {
++        const nrhi::BindingParamDesc& p = desc.params[i];
++        if (p.kind != nrhi::BindingParamKind::kTextureTable) continue;
++        const uint32_t base = layout->params[i].table_binding_base;
++        for (uint32_t j = 0; j < p.count; ++j) {
++          VkDescriptorSetLayoutBinding binding = {};
++          binding.binding = base + j;
++          binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
++          binding.descriptorCount = 1;
++          binding.stageFlags = kAllGraphics;
++          table_bindings.push_back(binding);
++        }
+       }
+       VkDescriptorSetLayoutCreateInfo table_layout_info = {};
+       table_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+-      table_layout_info.bindingCount = p.count;
++      table_layout_info.bindingCount = uint32_t(table_bindings.size());
+       table_layout_info.pBindings = table_bindings.data();
+-      VkDescriptorSetLayout table_layout = VK_NULL_HANDLE;
+-      if (dfn.vkCreateDescriptorSetLayout(device, &table_layout_info, nullptr, &table_layout) !=
+-          VK_SUCCESS) {
++      if (dfn.vkCreateDescriptorSetLayout(device, &table_layout_info, nullptr,
++                                          &layout->tables_layout) != VK_SUCCESS) {
+         REXLOG_ERROR("nrhi-vulkan: texture-table descriptor set layout creation failed");
++        layouts_.push_back(layout);
++        return nullptr;
++      }
++      for (uint32_t k = 0; k < table_bindings.size(); ++k) {
++        layout->table_slot_bindings[k] = table_bindings[k].binding;
+       }
+-      layout->table_layouts.push_back(table_layout);
+     }
+ 
+     std::vector<VkDescriptorSetLayout> all_layouts;
+     all_layouts.push_back(layout->set0_layout);
+-    for (VkDescriptorSetLayout l : layout->table_layouts) {
+-      all_layouts.push_back(l);
++    if (layout->tables_layout != VK_NULL_HANDLE) {
++      all_layouts.push_back(layout->tables_layout);
++    }
++    // Refuse rather than hand the driver a layout it cannot bind. Qualcomm's
++    // does not return an error for one - it faults - so checking here is the
++    // difference between the native renderer declining and the process dying.
++    if (uint32_t(all_layouts.size()) > props.maxBoundDescriptorSets) {
++      REXLOG_ERROR(
++          "nrhi-vulkan: pipeline layout needs {} descriptor sets, device allows {}",
++          all_layouts.size(), props.maxBoundDescriptorSets);
++      layouts_.push_back(layout);
++      return nullptr;
+     }
+     VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+     pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+@@ -1171,10 +1226,72 @@ class NrDeviceVulkan : public nrhi::Device {
+       layouts_.push_back(layout);
+       return nullptr;
+     }
++    REXLOG_INFO(
++        "nrhi-vulkan: binding layout built with {} descriptor set(s) "
++        "({} buffer bindings, {} tables packed into {} slots); device allows {}",
++        all_layouts.size(), layout->buffer_binding_count, table_count, total_table_slots,
++        props.maxBoundDescriptorSets);
+     layouts_.push_back(layout);
+     return layout;
+   }
+ 
++  // Rewrite OpDecorate DescriptorSet/Binding so every set >= 1 becomes set 1
++  // at binding (set - 1) * kTableBindingStride + binding. Returns false and
++  // leaves `out` alone if the blob is not SPIR-V we recognise or needs no
++  // change, in which case the caller uses it as it is.
++  static bool RemapTableDescriptorSets(const uint32_t* words, size_t size_bytes,
++                                       std::vector<uint32_t>* out) {
++    constexpr uint32_t kSpirvMagic = 0x07230203u;
++    constexpr uint32_t kOpDecorate = 71u;
++    constexpr uint32_t kDecorationBinding = 33u;
++    constexpr uint32_t kDecorationDescriptorSet = 34u;
++    if (words == nullptr || size_bytes < 5 * sizeof(uint32_t) ||
++        (size_bytes % sizeof(uint32_t)) != 0) {
++      return false;
++    }
++    const size_t word_count = size_bytes / sizeof(uint32_t);
++    if (words[0] != kSpirvMagic) {
++      return false;
++    }
++    // Pass 1: which ids sit in a set that has to move, and which set.
++    std::unordered_map<uint32_t, uint32_t> id_sets;
++    bool needs_remap = false;
++    for (size_t i = 5; i < word_count;) {
++      const uint32_t op = words[i] & 0xFFFFu;
++      const uint32_t len = words[i] >> 16;
++      if (len == 0 || i + len > word_count) return false;  // malformed; leave it
++      if (op == kOpDecorate && len >= 4 && words[i + 2] == kDecorationDescriptorSet) {
++        const uint32_t set = words[i + 3];
++        if (set >= 1) {
++          id_sets[words[i + 1]] = set;
++          needs_remap = true;
++        }
++      }
++      i += len;
++    }
++    if (!needs_remap) return false;
++    // Pass 2: rewrite in a copy.
++    out->assign(words, words + word_count);
++    for (size_t i = 5; i < word_count;) {
++      const uint32_t len = words[i] >> 16;
++      const uint32_t op = words[i] & 0xFFFFu;
++      if (op == kOpDecorate && len >= 4) {
++        const uint32_t target = words[i + 1];
++        auto it = id_sets.find(target);
++        if (it != id_sets.end()) {
++          if (words[i + 2] == kDecorationDescriptorSet) {
++            (*out)[i + 3] = NrBindingLayoutVulkan::kTableSetIndex;
++          } else if (words[i + 2] == kDecorationBinding) {
++            (*out)[i + 3] = (it->second - 1) * NrBindingLayoutVulkan::kTableBindingStride +
++                            words[i + 3];
++          }
++        }
++      }
++      i += len;
++    }
++    return true;
++  }
++
+   nrhi::Shader* CreateShader(const nrhi::ShaderDesc& desc) override {
+     if (desc.spirv == nullptr || desc.spirv_size_bytes == 0) {
+       REXLOG_ERROR("nrhi-vulkan: no SPIR-V blob for {}:{}",
+@@ -1182,8 +1299,21 @@ class NrDeviceVulkan : public nrhi::Device {
+                    desc.entry_point != nullptr ? desc.entry_point : "?");
+       return nullptr;
+     }
++    // The committed SPIR-V is compiled against the old one-set-per-table
++    // plan (sets 0..6). Fold sets 1..N down onto set 1, spacing each table's
++    // bindings by kTableBindingStride, so the modules match the packed layout
++    // CreateBindingLayout now builds. Doing it here rather than in DXC keeps
++    // the offline blobs and the D3D12 path untouched, and the mapping depends
++    // only on the shader's own set numbers, so a module stays layout-agnostic.
++    std::vector<uint32_t> remapped;
++    const uint32_t* spirv = desc.spirv;
++    size_t spirv_size = desc.spirv_size_bytes;
++    if (RemapTableDescriptorSets(desc.spirv, desc.spirv_size_bytes, &remapped)) {
++      spirv = remapped.data();
++      spirv_size = remapped.size() * sizeof(uint32_t);
++    }
+     VkShaderModule module =
+-        ui::vulkan::util::CreateShaderModule(vulkan_device_, desc.spirv, desc.spirv_size_bytes);
++        ui::vulkan::util::CreateShaderModule(vulkan_device_, spirv, spirv_size);
+     if (module == VK_NULL_HANDLE) {
+       REXLOG_ERROR("nrhi-vulkan: shader module creation failed ({}:{})",
+                    desc.name != nullptr ? desc.name : "?",
+@@ -1673,12 +1803,11 @@ class NrDeviceVulkan : public nrhi::Device {
+     return entry.set;
+   }
+ 
+-  // Cached texture-table set for (per-param set layout, ordered view tuple)
+-  // with white-fallback substitution already applied by the caller.
+-  VkDescriptorSet GetTableSet(VkDescriptorSetLayout set_layout,
++  // Cache the full packed image tuple. Null entries use the white texture.
++  VkDescriptorSet GetTableSet(const NrBindingLayoutVulkan* layout,
+                               NrTextureViewVulkan* const* views, uint32_t count) {
+     TableKey key{};
+-    key.layout = set_layout;
++    key.layout = layout->tables_layout;
+     key.count = count;
+     for (uint32_t i = 0; i < count; ++i) {
+       key.views[i] = views[i];
+@@ -1688,9 +1817,9 @@ class NrDeviceVulkan : public nrhi::Device {
+ 
+     NrProfScope prof_scope(prof_.table_miss);
+     SetEntry entry;
+-    if (!AllocateDescriptorSet(set_layout, &entry)) return VK_NULL_HANDLE;
+-    VkDescriptorImageInfo image_infos[nrhi::kMaxTextureTableSize];
+-    VkWriteDescriptorSet writes[nrhi::kMaxTextureTableSize];
++    if (!AllocateDescriptorSet(layout->tables_layout, &entry)) return VK_NULL_HANDLE;
++    VkDescriptorImageInfo image_infos[kMaxPackedTableSlots];
++    VkWriteDescriptorSet writes[kMaxPackedTableSlots];
+     for (uint32_t i = 0; i < count; ++i) {
+       image_infos[i] = {};
+       image_infos[i].imageView = views[i] != nullptr ? views[i]->view : white_view_;
+@@ -1698,7 +1827,7 @@ class NrDeviceVulkan : public nrhi::Device {
+       writes[i] = {};
+       writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+       writes[i].dstSet = entry.set;
+-      writes[i].dstBinding = i;
++      writes[i].dstBinding = layout->table_slot_bindings[i];
+       writes[i].descriptorCount = 1;
+       writes[i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+       writes[i].pImageInfo = &image_infos[i];
+@@ -1783,7 +1912,7 @@ class NrDeviceVulkan : public nrhi::Device {
+ 
+   struct TableKey {
+     VkDescriptorSetLayout layout;
+-    NrTextureViewVulkan* views[nrhi::kMaxTextureTableSize];
++    NrTextureViewVulkan* views[kMaxPackedTableSlots];
+     uint32_t count;
+     bool operator<(const TableKey& o) const {
+       if (layout != o.layout) return layout < o.layout;
+@@ -2361,16 +2490,33 @@ bool NrCmdVulkan::EnsureDrawState() {
+     }
+   }
+ 
+-  for (uint32_t i = 0; i < layout_->param_count; ++i) {
+-    const NrBindingLayoutVulkan::ParamInfo& p = layout_->params[i];
+-    if (p.kind != nrhi::BindingParamKind::kTextureTable) continue;
+-    if (!table_dirty_[p.table_index]) continue;
+-    VkDescriptorSet set = device->GetTableSet(layout_->table_layouts[p.table_index],
+-                                              table_views_[p.table_index], p.table_size);
+-    if (set != VK_NULL_HANDLE) {
+-      cmd.CmdVkBindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, layout_->pipeline_layout,
+-                                  p.set_index, 1, &set, 0, nullptr);
+-      table_dirty_[p.table_index] = false;
++  // All tables share set 1, so any dirty table means re-fetching and
++  // rebinding the one set that holds them all.
++  if (layout_->table_count != 0) {
++    bool any_dirty = false;
++    for (uint32_t k = 0; k < layout_->table_count; ++k) {
++      if (table_dirty_[k]) {
++        any_dirty = true;
++        break;
++      }
++    }
++    if (any_dirty) {
++      NrTextureViewVulkan* packed[kMaxPackedTableSlots] = {};
++      for (uint32_t i = 0; i < layout_->param_count; ++i) {
++        const NrBindingLayoutVulkan::ParamInfo& p = layout_->params[i];
++        if (p.kind != nrhi::BindingParamKind::kTextureTable) continue;
++        for (uint32_t j = 0; j < p.table_size; ++j) {
++          packed[p.table_slot_base + j] = table_views_[p.table_index][j];
++        }
++      }
++      VkDescriptorSet set = device->GetTableSet(layout_, packed, layout_->total_table_slots);
++      if (set != VK_NULL_HANDLE) {
++        cmd.CmdVkBindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, layout_->pipeline_layout,
++                                    NrBindingLayoutVulkan::kTableSetIndex, 1, &set, 0, nullptr);
++        for (uint32_t k = 0; k < layout_->table_count; ++k) {
++          table_dirty_[k] = false;
++        }
++      }
+     }
+   }
+   return true;
+diff --git a/src/ui/vulkan/vulkan_device.cpp b/src/ui/vulkan/vulkan_device.cpp
+index 72ff3b4..84b58f2 100644
+--- a/src/ui/vulkan/vulkan_device.cpp
++++ b/src/ui/vulkan/vulkan_device.cpp
+@@ -606,6 +606,7 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+   XE_UI_VULKAN_LIMIT(maxImageArrayLayers)
+   XE_UI_VULKAN_LIMIT(maxStorageBufferRange)
+   XE_UI_VULKAN_LIMIT(maxSamplerAllocationCount)
++  XE_UI_VULKAN_LIMIT(maxBoundDescriptorSets)
+   XE_UI_VULKAN_LIMIT(maxPerStageDescriptorSamplers)
+   XE_UI_VULKAN_LIMIT(maxPerStageDescriptorStorageBuffers)
+   XE_UI_VULKAN_LIMIT(maxPerStageDescriptorSampledImages)

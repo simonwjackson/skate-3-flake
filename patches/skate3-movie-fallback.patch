@@ -1,0 +1,146 @@
+Movie fallback session latch from Buku313/Skate3-Mobile:
+  5ae21ad3797fd4af7a6abd4c8b313932bb8efa61 (1.5 s heartbeat and latch)
+  d0472167a8c02015f446d0789eb6fe9e39e21bde (optional bounded timeout)
+
+Port only YieldForMovie and its cvars onto skate3recomp f6e0ae8. The base
+function and cvar match Buku's pre-5ae21ad versions byte-for-byte. No menu
+compilation, Android UI, or native GPU changes are included.
+
+Preserve upstream timeout defaults: 6000 ms on Android, 0 (disabled) on
+Linux and other platforms. A positive timeout prevents re-entry until a
+heartbeat gap of at least 1.5 s ends the decoder session. Quad freshness
+still gates entry, but cannot cancel an already latched fallback.
+
+diff --git a/src/skate3_native_scene.cpp b/src/skate3_native_scene.cpp
+--- a/src/skate3_native_scene.cpp
++++ b/src/skate3_native_scene.cpp
+@@ -566,8 +566,24 @@
+                     "sampling the video), so the native path has nothing to replay; "
+                     "the emulated frame is complete and correct there, same class as "
+                     "the photo editor. Detected via the MovieDecoder::Decode "
+-                    "heartbeat; native rendering resumes within 0.5 s of the last "
+-                    "decoded frame.")
++                    "heartbeat; fallback presentation is latched for the active "
++                    "decoder session so slow devices cannot alternate between "
++                    "native and emulated output mid-video. Android applies a "
++                    "bounded latch to prevent permanent black screens.")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++REXCVAR_DEFINE_INT32(
++    skate3_native_render_scene_fmv_yield_max_ms,
++#if REX_PLATFORM_ANDROID
++    6000,
++#else
++    0,
++#endif
++    "Skate 3",
++    "Maximum time to keep the emulated FMV presentation latched while the "
++    "MovieDecoder heartbeat remains active. 0 keeps the latch until the "
++    "decoder ends. Android uses a bounded fallback so a stale or firmware-"
++    "paced decoder cannot leave the player on a permanent black screen.")
++    .range(0, 120000)
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ REXCVAR_DEFINE_BOOL(skate3_native_render_scene_cas_yield, false, "Skate 3",
+                     "Yield to the emulated output while the create-a-skater editor "
+diff --git a/src/skate3_native_scene_gpu.cpp b/src/skate3_native_scene_gpu.cpp
+--- a/src/skate3_native_scene_gpu.cpp
++++ b/src/skate3_native_scene_gpu.cpp
+@@ -75,6 +75,7 @@
+ REXCVAR_DECLARE(bool, skate3_native_render_scene_entity_fade);
+ REXCVAR_DECLARE(bool, skate3_native_render_scene_fmv_native);
+ REXCVAR_DECLARE(bool, skate3_native_render_scene_fmv_yield);
++REXCVAR_DECLARE(int32_t, skate3_native_render_scene_fmv_yield_max_ms);
+ REXCVAR_DECLARE(bool, skate3_native_render_scene_hdr);
+ REXCVAR_DECLARE(bool, skate3_native_render_scene_hdr_packed);
+ REXCVAR_DECLARE(bool, skate3_native_render_scene_lightmaps);
+@@ -5373,7 +5374,12 @@
+   const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              PerfClock::now().time_since_epoch())
+                              .count();
+-  const bool active = now_ns - last_ns < 500'000'000;
++  // Decode callbacks may be roughly half a second apart on Android when the
++  // device is compiling pipelines or under thermal load. The old 500 ms
++  // freshness window repeatedly declared the same movie ended between two
++  // valid callbacks on Retroid, AYN and Samsung devices.
++  constexpr int64_t kDecoderHoldNs = 1'500'000'000;
++  const bool active = now_ns - last_ns < kDecoderHoldNs;
+   // LAST-RESORT gating: yielding INSTANTLY at video start presented the
+   // emulated framebuffer, which under draw suppression still holds a stale
+   // frame: the flash of the PREVIOUS video at every video boundary
+@@ -5385,10 +5391,47 @@
+   // plane decode failure) still reaches the emulated yield after the
+   // grace window.
+   static int64_t s_fresh_since = -1;
++  static bool s_yielding = false;
++  static bool s_yield_timed_out = false;
++  static int64_t s_yield_started_ns = -1;
+   if (!active) {
+     s_fresh_since = -1;
++    s_yield_timed_out = false;
++    s_yield_started_ns = -1;
++    if (s_yielding) {
++      s_yielding = false;
++      REXLOG_INFO("native-scene: FMV ended - native output resumes");
++    }
++    return false;
+   } else if (s_fresh_since < 0) {
+     s_fresh_since = now_ns;
++  }
++  if (s_yield_timed_out) {
++    return false;
++  }
++  // Once fallback presentation begins, RenderScene intentionally returns
++  // before replaying its 2D list. That means g_movie_quad_last_ns cannot be
++  // refreshed while yielded. Re-evaluating quad freshness every frame made
++  // the yield cancel itself after 500 ms, render one native frame, see the
++  // quad again, and yield again forever. Latch the fallback for the decoder
++  // session. Android also applies a generous hard bound: several firmware
++  // audio stacks pace the decoder heartbeat even after useful movie output
++  // has stopped, and an unbounded latch then presents black forever.
++  if (s_yielding) {
++    const int32_t max_ms =
++        REXCVAR_GET(skate3_native_render_scene_fmv_yield_max_ms);
++    if (max_ms > 0 && s_yield_started_ns >= 0 &&
++        now_ns - s_yield_started_ns >= int64_t(max_ms) * 1'000'000) {
++      s_yielding = false;
++      s_yield_timed_out = true;
++      s_yield_started_ns = -1;
++      REXLOG_WARN(
++          "native-scene: FMV fallback exceeded {} ms - resuming native "
++          "output until this decoder session ends",
++          max_ms);
++      return false;
++    }
++    return true;
+   }
+   const int64_t native_ns = g_movie_native_last_ns.load(std::memory_order_relaxed);
+   // Yield only for a video that is ON SCREEN and NOT being served:
+@@ -5403,20 +5446,16 @@
+   //     starting; a skip tail (<= ~600 ms) never can.
+   const int64_t quad_ns = g_movie_quad_last_ns.load(std::memory_order_relaxed);
+   const bool quad_recent = quad_ns >= 0 && now_ns - quad_ns < 500'000'000;
+-  const bool yield = active && now_ns - s_fresh_since >= 400'000'000 && quad_recent &&
++  const bool yield = now_ns - s_fresh_since >= 400'000'000 && quad_recent &&
+                      (native_ns < 0 || last_ns - native_ns > 1'000'000'000);
+-  static bool s_active = false;
+-  if (yield != s_active) {
+-    s_active = yield;
+-    if (yield) {
+-      REXLOG_INFO(
+-          "native-scene: FMV playing - yielding to emulated output "
+-          "(MovieDecoder heartbeat; substitution did not engage)");
+-    } else {
+-      REXLOG_INFO("native-scene: FMV ended - native output resumes");
+-    }
+-  }
+-  return yield;
++  if (yield) {
++    s_yielding = true;
++    s_yield_started_ns = now_ns;
++    REXLOG_INFO(
++        "native-scene: FMV playing - yielding to emulated output "
++        "(decoder-session latch with safety timeout)");
++  }
++  return s_yielding;
+ }
+ 
+ }  // namespace

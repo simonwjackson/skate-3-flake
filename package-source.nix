@@ -159,6 +159,10 @@ stdenv.mkDerivation {
     patch -p1 -d third_party/rexglue-sdk < ${./patches/rexglue-suspended-thread-race.patch}
     # Buku313/rexglue-skate3-android e99203e: skip draws with no pipeline.
     patch -p1 -d third_party/rexglue-sdk < ${./patches/rexglue-vulkan-null-pipeline-guard.patch}
+    # Buku313 19050db: fit native texture tables within Turnip's four-set limit.
+    patch -p1 -d third_party/rexglue-sdk < ${./patches/rexglue-vulkan-packed-tables.patch}
+    # Buku313 5ae21ad + d047216: latch movie fallback across slow decoder frames.
+    patch -p1 < ${./patches/skate3-movie-fallback.patch}
   ''
   + ''
 
